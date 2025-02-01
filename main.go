@@ -280,7 +280,7 @@ func (db *DB) SetTransaction(tx *Transaction) error {
 	return db.setTransactionInternal(tx)
 }
 
-// Update setTransactionInternal to skip validation
+// Update setTransactionInternal to handle references without locking
 func (db *DB) setTransactionInternal(tx *Transaction) error {
 	// Add to Bloom filter
 	db.bloom.Add(tx.Hash)
@@ -288,13 +288,13 @@ func (db *DB) setTransactionInternal(tx *Transaction) error {
 	// Convert to fixed record
 	record, err := transactionToFixedRecord(tx)
 	if err != nil {
-		return err
+		return fmt.Errorf("fixed record conversion: %w", err)
 	}
 
 	// Write fixed record
 	offset, err := db.writeFixedRecord(record)
 	if err != nil {
-		return err
+		return fmt.Errorf("write fixed record: %w", err)
 	}
 
 	// Prepare and write variable length data
@@ -308,15 +308,16 @@ func (db *DB) setTransactionInternal(tx *Transaction) error {
 
 	varBytes, err := json.Marshal(varData)
 	if err != nil {
-		return err
+		return fmt.Errorf("marshal var data: %w", err)
 	}
 
 	// Write variable data size and content
 	if err := binary.Write(db.file, binary.BigEndian, uint32(len(varBytes))); err != nil {
-		return err
+		return fmt.Errorf("write var size: %w", err)
 	}
+
 	if _, err := db.file.Write(varBytes); err != nil {
-		return err
+		return fmt.Errorf("write var data: %w", err)
 	}
 
 	// Update indices
@@ -324,11 +325,25 @@ func (db *DB) setTransactionInternal(tx *Transaction) error {
 	db.timeSkipList.Insert(tx.Timestamp, tx.Hash)
 	db.addressIndex[tx.From] = append(db.addressIndex[tx.From], tx.Hash)
 
-	// Add references
+	// Add references without taking another lock
 	for _, refHash := range tx.References {
-		if err := db.AddReference(tx.Hash, refHash); err != nil {
-			return err
+		// Update forward references
+		if db.forwardRefs[tx.Hash] == nil {
+			db.forwardRefs[tx.Hash] = make([]string, 0)
 		}
+		db.forwardRefs[tx.Hash] = append(db.forwardRefs[tx.Hash], refHash)
+
+		// Update backward references
+		if db.backwardRefs[refHash] == nil {
+			db.backwardRefs[refHash] = make([]string, 0)
+		}
+		db.backwardRefs[refHash] = append(db.backwardRefs[refHash], tx.Hash)
+
+		// Increment reference count
+		if db.refCounts[refHash] == nil {
+			db.refCounts[refHash] = &atomic.Uint32{}
+		}
+		db.refCounts[refHash].Add(1)
 	}
 
 	return nil

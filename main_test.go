@@ -2,6 +2,7 @@ package hyyve
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -321,4 +322,97 @@ func TestConcurrentAccess(t *testing.T) {
 	for err := range errc {
 		t.Error(err)
 	}
+}
+
+func TestReferenceValidation(t *testing.T) {
+	db, cleanup := createTestDB(t)
+	defer cleanup()
+
+	// Try to store tx2 before tx1 exists
+	tx2 := createTestTransaction()
+	tx2.References = []string{"nonexistent_tx"}
+
+	err := db.SetTransaction(tx2)
+	if !errors.Is(err, ErrInvalidReference) {
+		t.Errorf("expected ErrInvalidReference, got %v", err)
+	}
+}
+
+func TestMultipleReferences(t *testing.T) {
+	db, cleanup := createTestDB(t)
+	defer cleanup()
+
+	// Create first transaction
+	tx1 := createTestTransaction()
+	tx1.Hash = "tx1"
+	tx1.References = []string{} // Use empty slice instead of nil
+
+	if err := db.SetTransaction(tx1); err != nil {
+		t.Fatal(err)
+	}
+
+	// Verify tx1 exists
+	_, err := db.GetTransaction("tx1")
+	if err != nil {
+		t.Fatalf("tx1 not found: %v", err)
+	}
+
+	// Create second transaction that references the first
+	tx2 := createTestTransaction()
+	tx2.Hash = "tx2"
+	tx2.References = []string{"tx1"}
+
+	if err := db.SetTransaction(tx2); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestAddressHistoryOrder(t *testing.T) {
+	db, cleanup := createTestDB(t)
+	defer cleanup()
+
+	addr := "test_address"
+	now := time.Now().UnixNano()
+
+	// Create transactions at different times
+	txs := []*Transaction{
+		{Hash: "tx1", From: addr, Timestamp: now - 2},
+		{Hash: "tx2", From: addr, Timestamp: now - 1},
+		{Hash: "tx3", From: addr, Timestamp: now},
+	}
+
+	for _, tx := range txs {
+		if err := db.SetTransaction(tx); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	// Get history
+	history, err := db.GetAddressTransactions(addr, 0, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Verify newest first order
+	if len(history) != 3 {
+		t.Fatalf("expected 3 transactions, got %d", len(history))
+	}
+	if history[0].Hash != "tx3" || history[2].Hash != "tx1" {
+		t.Error("transactions not in correct order")
+	}
+}
+
+func TestReferenceScenarios(t *testing.T) {
+	t.Run("missing reference", func(t *testing.T) {
+		db, cleanup := createTestDB(t)
+		defer cleanup()
+
+		tx := createTestTransaction()
+		tx.References = []string{"nonexistent"}
+
+		err := db.SetTransaction(tx)
+		if !errors.Is(err, ErrInvalidReference) {
+			t.Errorf("expected ErrInvalidReference, got %v", err)
+		}
+	})
 }
