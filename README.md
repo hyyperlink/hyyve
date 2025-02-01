@@ -27,6 +27,31 @@ HyyveKV is a specialized storage engine designed for high-throughput transaction
 - Memory usage: Configurable Bloom filter size (default: 16MB)
 - Concurrent reads: Multiple readers with optimized synchronization
 
+### Benchmark Results
+
+**System Information:**
+- CPU: AMD Ryzen 9 5900X 12-Core Processor
+- OS: Linux
+- Architecture: amd64
+
+**Auto-tuned Configuration:**
+- Write Batch Size: 823 transactions
+- Read Batch Size: 205 transactions
+- Memory Usage: 1.0 MB
+- Target Latency: 4.236ms
+- Max Throughput: 235,243 TPS
+
+**Performance by Batch Size:**
+
+| Batch Size | Batch Data | DB Size | Write TPS | Read TPS |
+|------------|------------|----------|-----------|-----------|
+| 82        | 82.0 KB    | 48.0 MB  | 169,470   | 225,374   |
+| 411       | 411.0 KB   | 102.0 MB | 169,287   | 222,231   |
+| 823       | 823.0 KB   | 166.7 MB | 171,172   | 221,749   |
+| 1646      | 1.6 MB     | 204.9 MB | 162,931   | 223,710   |
+
+All benchmarks run with 24 parallel workers. Numbers represent average performance across multiple runs.
+
 ## Installation
 ```bash
 go get github.com/hyyperlink/hyyve

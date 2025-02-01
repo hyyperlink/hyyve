@@ -44,36 +44,36 @@ BenchmarkAll
     main_test.go:609: 
         Auto-tuned Configuration:
     main_test.go:610: =======================
-    main_test.go:611: Write Batch Size: 366
-    main_test.go:612: Read Batch Size:  91
-    main_test.go:613: Memory Usage:     502.9 KB
-    main_test.go:614: Target Latency:   1.902823ms
-    main_test.go:615: Max Throughput:   239976.40 TPS
-BenchmarkAll/write_batch_36
-BenchmarkAll/write_batch_36-24         	    5581	    212789 ns/op	   66174 B/op	     646 allocs/op
-BenchmarkAll/read_batch_36
-BenchmarkAll/read_batch_36-24          	    7069	    165110 ns/op	   23753 B/op	     406 allocs/op
-BenchmarkAll/write_batch_183
-BenchmarkAll/write_batch_183-24        	    1064	   1059244 ns/op	  325432 B/op	    3171 allocs/op
-BenchmarkAll/read_batch_183
-BenchmarkAll/read_batch_183-24         	    1429	    820048 ns/op	  116656 B/op	    2025 allocs/op
-BenchmarkAll/write_batch_366
-BenchmarkAll/write_batch_366-24        	     534	   2134961 ns/op	  639220 B/op	    6412 allocs/op
-BenchmarkAll/read_batch_366
-BenchmarkAll/read_batch_366-24         	     706	   1632711 ns/op	  232544 B/op	    4151 allocs/op
-BenchmarkAll/write_batch_732
-BenchmarkAll/write_batch_732-24        	     264	   4315973 ns/op	 1301578 B/op	   13040 allocs/op
-BenchmarkAll/read_batch_732
-BenchmarkAll/read_batch_732-24         	     339	   3361839 ns/op	  468988 B/op	    8547 allocs/op
+    main_test.go:611: Write Batch Size: 823
+    main_test.go:612: Read Batch Size:  205
+    main_test.go:613: Memory Usage:     1.0 MB
+    main_test.go:614: Target Latency:   4.236111ms
+    main_test.go:615: Max Throughput:   235243.61 TPS
+BenchmarkAll/write_batch_82
+BenchmarkAll/write_batch_82-24         	    2427	    483860 ns/op	  149285 B/op	    1444 allocs/op
+BenchmarkAll/read_batch_82
+BenchmarkAll/read_batch_82-24          	    3136	    363840 ns/op	   53370 B/op	     914 allocs/op
+BenchmarkAll/write_batch_411
+BenchmarkAll/write_batch_411-24        	     471	   2427822 ns/op	  702652 B/op	    7238 allocs/op
+BenchmarkAll/read_batch_411
+BenchmarkAll/read_batch_411-24         	     625	   1849426 ns/op	  257629 B/op	    4696 allocs/op
+BenchmarkAll/write_batch_823
+BenchmarkAll/write_batch_823-24        	     241	   4808029 ns/op	 1455488 B/op	   14711 allocs/op
+BenchmarkAll/read_batch_823
+BenchmarkAll/read_batch_823-24         	     303	   3711397 ns/op	  520166 B/op	    9648 allocs/op
+BenchmarkAll/write_batch_1646
+BenchmarkAll/write_batch_1646-24       	     100	  10102407 ns/op	 2926749 B/op	   29632 allocs/op
+BenchmarkAll/read_batch_1646
+BenchmarkAll/read_batch_1646-24        	     156	   7357744 ns/op	 1051622 B/op	   19541 allocs/op
     main_test.go:691: 
         Transaction Processing Speed Summary:
         =====================================
         Batch Size |  Batch Data  |    DB Size    |    Write TPS    |    Read TPS     
         -----------|--------------|---------------|-----------------|----------------
-               36 |     36.0 KB |      47.4 MB |      169181.91 |      218036.43
-              183 |    183.0 KB |      96.4 MB |      172764.77 |      223157.85
-              366 |    366.0 KB |     149.8 MB |      171431.76 |      224167.10
-              732 |    732.0 KB |     211.2 MB |      169602.62 |      217738.15
+               82 |     82.0 KB |      48.0 MB |      169470.59 |      225374.19
+              411 |    411.0 KB |     102.0 MB |      169287.77 |      222231.33
+              823 |    823.0 KB |     166.7 MB |      171172.15 |      221749.56
+             1646 |      1.6 MB |     204.9 MB |      162931.62 |      223710.03
         
 PASS
-ok  	github.com/hyyperlink/hyyve	11.622s
+ok  	github.com/hyyperlink/hyyve	12.214s
