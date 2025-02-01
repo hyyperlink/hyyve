@@ -69,6 +69,7 @@ type DB struct {
 	refCounts    map[string]*atomic.Uint32
 	timeSkipList *SkipList
 	bloom        *BloomFilter
+	filePos      sync.Mutex // Protects file position during reads/writes
 }
 
 type Options struct {

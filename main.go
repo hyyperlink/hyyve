@@ -11,6 +11,7 @@ import (
 	"os"
 	"sort"
 	"strings"
+	"sync"
 	"sync/atomic"
 )
 
@@ -125,6 +126,7 @@ func Open(opts Options) (*DB, error) {
 		refCounts:    make(map[string]*atomic.Uint32),
 		timeSkipList: NewSkipList(),
 		bloom:        NewBloomFilter(),
+		filePos:      sync.Mutex{},
 	}
 
 	if err := db.loadIndex(); err != nil {
@@ -136,16 +138,28 @@ func Open(opts Options) (*DB, error) {
 }
 
 func (db *DB) loadIndex() error {
+	db.filePos.Lock()
+	defer db.filePos.Unlock()
+
+	// Start from beginning of file
+	if _, err := db.file.Seek(0, 0); err != nil {
+		return fmt.Errorf("seek to start: %w", err)
+	}
+
 	const batchSize = 1000
 	var batch []*Transaction
-	var currentOffset int64
-	var err error
+	var batchStartOffset int64 // Track where this batch started
 
 	for {
-		// Get current position
-		currentOffset, err = db.file.Seek(0, io.SeekCurrent)
+		// Get current position before read
+		currentOffset, err := db.file.Seek(0, io.SeekCurrent)
 		if err != nil {
-			return err
+			return fmt.Errorf("get current offset: %w", err)
+		}
+
+		// If this is the start of a new batch, record the offset
+		if len(batch) == 0 {
+			batchStartOffset = currentOffset
 		}
 
 		// Read fixed record
@@ -154,7 +168,7 @@ func (db *DB) loadIndex() error {
 			break
 		}
 		if err != nil {
-			return err
+			return fmt.Errorf("read record at offset %d: %w", currentOffset, err)
 		}
 
 		// Read variable data
@@ -190,7 +204,7 @@ func (db *DB) loadIndex() error {
 
 		// Process batch if full
 		if len(batch) >= batchSize {
-			if err := db.processBatch(batch, currentOffset-int64(len(batch))*MinRecordSize); err != nil {
+			if err := db.processBatch(batch, batchStartOffset); err != nil {
 				return err
 			}
 			batch = batch[:0] // Clear batch
@@ -199,7 +213,7 @@ func (db *DB) loadIndex() error {
 
 	// Process remaining transactions
 	if len(batch) > 0 {
-		if err := db.processBatch(batch, currentOffset-int64(len(batch))*MinRecordSize); err != nil {
+		if err := db.processBatch(batch, batchStartOffset); err != nil {
 			return err
 		}
 	}
@@ -249,17 +263,25 @@ func (db *DB) Close() error {
 	return db.file.Close()
 }
 
-// Internal method for setting transactions
-func (db *DB) setTransactionInternal(tx *Transaction) error {
-	if db.isClosed {
-		return ErrDatabaseClosed
-	}
-
-	// Validate references
+// Update SetTransaction to avoid lock ordering issues
+func (db *DB) SetTransaction(tx *Transaction) error {
+	// Validate before taking the write lock
 	if err := db.ValidateReferences(tx); err != nil {
 		return err
 	}
 
+	db.mu.Lock()
+	defer db.mu.Unlock()
+
+	if db.isClosed {
+		return ErrDatabaseClosed
+	}
+
+	return db.setTransactionInternal(tx)
+}
+
+// Update setTransactionInternal to skip validation
+func (db *DB) setTransactionInternal(tx *Transaction) error {
 	// Add to Bloom filter
 	db.bloom.Add(tx.Hash)
 
@@ -312,14 +334,15 @@ func (db *DB) setTransactionInternal(tx *Transaction) error {
 	return nil
 }
 
-// Update SetTransaction to use internal method
-func (db *DB) SetTransaction(tx *Transaction) error {
-	db.mu.Lock()
-	defer db.mu.Unlock()
-	return db.setTransactionInternal(tx)
-}
-
 func (db *DB) readTransactionFromOffset(offset int64) (*Transaction, error) {
+	db.filePos.Lock()
+	defer db.filePos.Unlock()
+
+	// Seek to position
+	if _, err := db.file.Seek(offset, 0); err != nil {
+		return nil, err
+	}
+
 	// Read fixed record
 	record, err := db.readFixedRecord(offset)
 	if err != nil {
@@ -392,6 +415,15 @@ func (h *RecordHeader) UnmarshalBinary(data []byte) error {
 	h.RefCount = binary.BigEndian.Uint16(data[8:10])
 	h.ChangeCount = binary.BigEndian.Uint16(data[10:12])
 	h.Fee = binary.BigEndian.Uint16(data[12:14])
+
+	// Add validation
+	if h.Timestamp < 0 {
+		return fmt.Errorf("%w: invalid timestamp %d", ErrCorruptedData, h.Timestamp)
+	}
+	if h.RefCount > 1000 || h.ChangeCount > 1000 { // reasonable limits
+		return fmt.Errorf("%w: invalid counts ref=%d change=%d", ErrCorruptedData, h.RefCount, h.ChangeCount)
+	}
+
 	return nil
 }
 
@@ -446,6 +478,9 @@ func fixedRecordToTransaction(record *FixedRecord) *Transaction {
 
 // Write a fixed record to disk
 func (db *DB) writeFixedRecord(record *FixedRecord) (int64, error) {
+	db.filePos.Lock()
+	defer db.filePos.Unlock()
+
 	headerBytes, err := record.Header.MarshalBinary()
 	if err != nil {
 		return 0, err
