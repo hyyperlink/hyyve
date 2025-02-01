@@ -46,8 +46,10 @@ func createTestTransaction() *Transaction {
 		From:      "abcdef0123456789abcdef0123456789",
 		Signature: "00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff",
 		Changes: []TransactionChange{{
-			To:     "1111111111111111111111111111111111111111",
-			Amount: 1000,
+			To:              "1111111111111111111111111111111111111111",
+			Amount:          1000,
+			InstructionType: "transfer",
+			InstructionData: []byte(`{"memo":"test"}`),
 		}},
 		References: []string{},
 		Fee:        500,
@@ -542,4 +544,298 @@ func TestReferenceQueries(t *testing.T) {
 	if !errors.Is(err, ErrKeyNotFound) {
 		t.Errorf("expected ErrKeyNotFound for nonexistent tx, got %v", err)
 	}
+}
+
+func TestBatchGetTransactions(t *testing.T) {
+	db, cleanup := createTestDB(t)
+	defer cleanup()
+
+	// Create several transactions
+	txs := make([]*Transaction, 3)
+	for i := range txs {
+		tx := createTestTransaction()
+		tx.Hash = fmt.Sprintf("tx%d", i)
+		tx.Changes[0].Amount = uint64(1000 * (i + 1)) // Different amounts to verify correct retrieval
+		txs[i] = tx
+		if err := db.SetTransaction(tx); err != nil {
+			t.Fatalf("failed to store tx%d: %v", i, err)
+		}
+	}
+
+	// Test batch retrieval
+	hashes := []string{"tx0", "tx1", "nonexistent", "tx2"}
+	result := db.BatchGetTransactions(hashes)
+
+	// Verify successful retrievals
+	for i := range txs {
+		hash := fmt.Sprintf("tx%d", i)
+		got, exists := result.Transactions[hash]
+		if !exists {
+			t.Errorf("transaction %s not found in results", hash)
+			continue
+		}
+		if got.Changes[0].Amount != uint64(1000*(i+1)) {
+			t.Errorf("wrong amount for tx%d: want %d, got %d", i, 1000*(i+1), got.Changes[0].Amount)
+		}
+	}
+
+	// Verify error for nonexistent transaction
+	err, exists := result.Errors["nonexistent"]
+	if !exists {
+		t.Error("expected error for nonexistent transaction")
+	} else if !errors.Is(err, ErrKeyNotFound) {
+		t.Errorf("expected ErrKeyNotFound, got %v", err)
+	}
+}
+
+func humanReadableSize(bytes int64) string {
+	const unit = 1024
+	if bytes < unit {
+		return fmt.Sprintf("%d B", bytes)
+	}
+	div, exp := int64(unit), 0
+	for n := bytes / unit; n >= unit; n /= unit {
+		div *= unit
+		exp++
+	}
+	return fmt.Sprintf("%.1f %cB", float64(bytes)/float64(div), "KMGTPE"[exp])
+}
+
+func BenchmarkAll(b *testing.B) {
+	db, cleanup := createBenchDB(b)
+	defer cleanup()
+
+	config := db.AutoTuneBatchSize()
+	b.Logf("\nAuto-tuned Configuration:")
+	b.Logf("=======================")
+	b.Logf("Write Batch Size: %d", config.WriteBatchSize)
+	b.Logf("Read Batch Size:  %d", config.ReadBatchSize)
+	b.Logf("Memory Usage:     %s", humanReadableSize(config.MemoryLimit))
+	b.Logf("Target Latency:   %v", config.TargetLatency)
+	b.Logf("Max Throughput:   %.2f TPS", config.MaxThroughput)
+
+	var results strings.Builder
+	results.WriteString("\nTransaction Processing Speed Summary:\n")
+	results.WriteString("=====================================\n")
+	results.WriteString("Batch Size |  Batch Data  |    DB Size    |    Write TPS    |    Read TPS     \n")
+	results.WriteString("-----------|--------------|---------------|-----------------|----------------\n")
+
+	// Test around the optimal sizes
+	writeSizes := []int{
+		config.WriteBatchSize / 10,
+		config.WriteBatchSize / 2,
+		config.WriteBatchSize,
+		config.WriteBatchSize * 2,
+	}
+
+	// Run benchmarks with different combinations
+	for _, writeSize := range writeSizes {
+		// Calculate batch data size
+		txSize := int64(writeSize * 1024)
+		batchSize := humanReadableSize(txSize)
+
+		var writeTime time.Duration
+		var readTime time.Duration
+		var writeOps int
+		var readOps int
+
+		// Measure write speed
+		b.Run(fmt.Sprintf("write_batch_%d", writeSize), func(b *testing.B) {
+			start := time.Now()
+			writeOps = b.N
+			for i := 0; i < b.N; i++ {
+				txs := make([]*Transaction, writeSize)
+				for j := range txs {
+					tx := createTestTransaction()
+					tx.Hash = fmt.Sprintf("tune_%d", j)
+					txs[j] = tx
+				}
+				if err := db.BatchSetTransactions(txs); err != nil {
+					b.Fatalf("batch write failed: %v", err)
+				}
+			}
+			writeTime = time.Since(start)
+		})
+
+		// Get DB size after writing
+		dbInfo, err := os.Stat(db.filepath)
+		if err != nil {
+			b.Fatalf("failed to get db size: %v", err)
+		}
+		dbSize := humanReadableSize(dbInfo.Size())
+
+		// Measure read speed
+		b.Run(fmt.Sprintf("read_batch_%d", writeSize), func(b *testing.B) {
+			start := time.Now()
+			readOps = b.N
+			for i := 0; i < b.N; i++ {
+				hashes := make([]string, writeSize)
+				for j := range hashes {
+					hashes[j] = fmt.Sprintf("tune_%d", j)
+				}
+				result := db.BatchGetTransactions(hashes)
+				if len(result.Transactions) != writeSize {
+					b.Fatalf("expected %d transactions, got %d", writeSize, len(result.Transactions))
+				}
+			}
+			readTime = time.Since(start)
+		})
+
+		writeTPS := float64(writeOps*writeSize) / writeTime.Seconds()
+		readTPS := float64(readOps*writeSize) / readTime.Seconds()
+
+		fmt.Fprintf(&results, "%9d | %11s | %12s | %14.2f | %14.2f\n",
+			writeSize, batchSize, dbSize, writeTPS, readTPS)
+	}
+
+	b.Log(results.String())
+}
+
+func BenchmarkOperations(b *testing.B) {
+	// Create test DB
+	dir, err := os.MkdirTemp("", "hyyve-bench-*")
+	if err != nil {
+		b.Fatalf("failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(dir)
+
+	db, err := Open(Options{
+		FilePath: filepath.Join(dir, "bench.db"),
+	})
+	if err != nil {
+		b.Fatalf("failed to open db: %v", err)
+	}
+	defer db.Close()
+
+	// Test different batch sizes
+	for _, batchSize := range []int{1, 10, 100, 1000} {
+		// Create test transactions
+		txs := make([]*Transaction, batchSize)
+		var hashes []string
+		for i := range txs {
+			tx := createTestTransaction()
+			tx.Hash = fmt.Sprintf("tx%d", i)
+			txs[i] = tx
+			hashes = append(hashes, tx.Hash)
+		}
+
+		b.Run(fmt.Sprintf("write_batch_%d", batchSize), func(b *testing.B) {
+			b.ResetTimer() // Don't count setup time
+			for i := 0; i < b.N; i++ {
+				if err := db.BatchSetTransactions(txs); err != nil {
+					b.Fatalf("batch write failed: %v", err)
+				}
+			}
+			b.SetBytes(int64(batchSize * 1024)) // Approximate tx size
+		})
+
+		// Write data for read benchmarks
+		if err := db.BatchSetTransactions(txs); err != nil {
+			b.Fatalf("failed to prepare read benchmark: %v", err)
+		}
+
+		b.Run(fmt.Sprintf("read_batch_%d", batchSize), func(b *testing.B) {
+			b.ResetTimer()
+			for i := 0; i < b.N; i++ {
+				result := db.BatchGetTransactions(hashes)
+				if len(result.Transactions) != batchSize {
+					b.Fatalf("expected %d transactions, got %d", batchSize, len(result.Transactions))
+				}
+			}
+			b.SetBytes(int64(batchSize * 1024))
+		})
+
+		b.Run(fmt.Sprintf("read_sequential_%d", batchSize), func(b *testing.B) {
+			b.ResetTimer()
+			for i := 0; i < b.N; i++ {
+				for _, hash := range hashes {
+					if _, err := db.GetTransaction(hash); err != nil {
+						b.Fatalf("sequential read failed: %v", err)
+					}
+				}
+			}
+			b.SetBytes(int64(batchSize * 1024))
+		})
+	}
+}
+
+func BenchmarkProfile(b *testing.B) {
+	// Create test DB
+	dir, err := os.MkdirTemp("", "hyyve-profile-*")
+	if err != nil {
+		b.Fatalf("failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(dir)
+
+	db, err := Open(Options{
+		FilePath: filepath.Join(dir, "profile.db"),
+	})
+	if err != nil {
+		b.Fatalf("failed to open db: %v", err)
+	}
+	defer db.Close()
+
+	// Create test transactions
+	const batchSize = 100
+	txs := make([]*Transaction, batchSize)
+	var hashes []string
+	for i := range txs {
+		tx := createTestTransaction()
+		tx.Hash = fmt.Sprintf("tx%d", i)
+		txs[i] = tx
+		hashes = append(hashes, tx.Hash)
+	}
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		// Write batch
+		if err := db.BatchSetTransactions(txs); err != nil {
+			b.Fatalf("batch write failed: %v", err)
+		}
+
+		// Read batch
+		result := db.BatchGetTransactions(hashes)
+		if len(result.Transactions) != batchSize {
+			b.Fatalf("expected %d transactions, got %d", batchSize, len(result.Transactions))
+		}
+	}
+}
+
+// Add helper for benchmarks
+func createBenchDB(b *testing.B) (*DB, func()) {
+	b.Helper()
+
+	dir, err := os.MkdirTemp("", "hyyve-bench-*")
+	if err != nil {
+		b.Fatalf("failed to create temp dir: %v", err)
+	}
+
+	db, err := Open(Options{
+		FilePath: filepath.Join(dir, "bench.db"),
+	})
+	if err != nil {
+		os.RemoveAll(dir)
+		b.Fatalf("failed to open db: %v", err)
+	}
+
+	cleanup := func() {
+		db.Close()
+		os.RemoveAll(dir)
+	}
+
+	return db, cleanup
+}
+
+func BenchmarkAutoTune(b *testing.B) {
+	db, cleanup := createBenchDB(b)
+	defer cleanup()
+
+	config := db.AutoTuneBatchSize()
+	b.Logf("\nAuto-tuned Configuration:")
+	b.Logf("=======================")
+	b.Logf("Write Batch Size: %d", config.WriteBatchSize)
+	b.Logf("Read Batch Size:  %d", config.ReadBatchSize)
+	b.Logf("Memory Usage:     %s", humanReadableSize(config.MemoryLimit))
+	b.Logf("Target Latency:   %v", config.TargetLatency)
+	b.Logf("Max Throughput:   %.2f TPS", config.MaxThroughput)
 }

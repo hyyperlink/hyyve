@@ -1,0 +1,79 @@
+=== RUN   TestReadTransactionFromOffset
+=== RUN   TestReadTransactionFromOffset/basic_transaction
+=== RUN   TestReadTransactionFromOffset/with_variable_data
+=== RUN   TestReadTransactionFromOffset/error_cases
+=== RUN   TestReadTransactionFromOffset/error_cases/invalid_offset
+=== RUN   TestReadTransactionFromOffset/error_cases/zero_offset
+=== RUN   TestReadTransactionFromOffset/data_corruption
+--- PASS: TestReadTransactionFromOffset (0.00s)
+    --- PASS: TestReadTransactionFromOffset/basic_transaction (0.00s)
+    --- PASS: TestReadTransactionFromOffset/with_variable_data (0.00s)
+    --- PASS: TestReadTransactionFromOffset/error_cases (0.00s)
+        --- PASS: TestReadTransactionFromOffset/error_cases/invalid_offset (0.00s)
+        --- PASS: TestReadTransactionFromOffset/error_cases/zero_offset (0.00s)
+    --- PASS: TestReadTransactionFromOffset/data_corruption (0.00s)
+=== RUN   TestReadTransactionFromOffset_Corrupted
+--- PASS: TestReadTransactionFromOffset_Corrupted (0.00s)
+=== RUN   TestLoadIndex
+--- PASS: TestLoadIndex (0.00s)
+=== RUN   TestConcurrentAccess
+--- PASS: TestConcurrentAccess (0.01s)
+=== RUN   TestReferenceValidation
+--- PASS: TestReferenceValidation (0.00s)
+=== RUN   TestMultipleReferences
+--- PASS: TestMultipleReferences (0.00s)
+=== RUN   TestAddressHistoryOrder
+--- PASS: TestAddressHistoryOrder (0.00s)
+=== RUN   TestReferenceScenarios
+=== RUN   TestReferenceScenarios/missing_reference
+--- PASS: TestReferenceScenarios (0.00s)
+    --- PASS: TestReferenceScenarios/missing_reference (0.00s)
+=== RUN   TestDuplicateReferences
+--- PASS: TestDuplicateReferences (0.00s)
+=== RUN   TestCanArchive
+--- PASS: TestCanArchive (0.00s)
+=== RUN   TestReferenceQueries
+--- PASS: TestReferenceQueries (0.00s)
+=== RUN   TestBatchGetTransactions
+--- PASS: TestBatchGetTransactions (0.00s)
+goos: linux
+goarch: amd64
+pkg: github.com/hyyperlink/hyyve
+cpu: AMD Ryzen 9 5900X 12-Core Processor            
+BenchmarkAll
+    main_test.go:609: 
+        Auto-tuned Configuration:
+    main_test.go:610: =======================
+    main_test.go:611: Write Batch Size: 366
+    main_test.go:612: Read Batch Size:  91
+    main_test.go:613: Memory Usage:     502.9 KB
+    main_test.go:614: Target Latency:   1.902823ms
+    main_test.go:615: Max Throughput:   239976.40 TPS
+BenchmarkAll/write_batch_36
+BenchmarkAll/write_batch_36-24         	    5581	    212789 ns/op	   66174 B/op	     646 allocs/op
+BenchmarkAll/read_batch_36
+BenchmarkAll/read_batch_36-24          	    7069	    165110 ns/op	   23753 B/op	     406 allocs/op
+BenchmarkAll/write_batch_183
+BenchmarkAll/write_batch_183-24        	    1064	   1059244 ns/op	  325432 B/op	    3171 allocs/op
+BenchmarkAll/read_batch_183
+BenchmarkAll/read_batch_183-24         	    1429	    820048 ns/op	  116656 B/op	    2025 allocs/op
+BenchmarkAll/write_batch_366
+BenchmarkAll/write_batch_366-24        	     534	   2134961 ns/op	  639220 B/op	    6412 allocs/op
+BenchmarkAll/read_batch_366
+BenchmarkAll/read_batch_366-24         	     706	   1632711 ns/op	  232544 B/op	    4151 allocs/op
+BenchmarkAll/write_batch_732
+BenchmarkAll/write_batch_732-24        	     264	   4315973 ns/op	 1301578 B/op	   13040 allocs/op
+BenchmarkAll/read_batch_732
+BenchmarkAll/read_batch_732-24         	     339	   3361839 ns/op	  468988 B/op	    8547 allocs/op
+    main_test.go:691: 
+        Transaction Processing Speed Summary:
+        =====================================
+        Batch Size |  Batch Data  |    DB Size    |    Write TPS    |    Read TPS     
+        -----------|--------------|---------------|-----------------|----------------
+               36 |     36.0 KB |      47.4 MB |      169181.91 |      218036.43
+              183 |    183.0 KB |      96.4 MB |      172764.77 |      223157.85
+              366 |    366.0 KB |     149.8 MB |      171431.76 |      224167.10
+              732 |    732.0 KB |     211.2 MB |      169602.62 |      217738.15
+        
+PASS
+ok  	github.com/hyyperlink/hyyve	11.622s

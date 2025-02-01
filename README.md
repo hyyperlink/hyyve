@@ -136,20 +136,11 @@ const (
 ### Storage Format
 HyyveKV uses a hybrid storage format optimized for both random access and sequential reads:
 
-1. Fixed-Size Records (144 bytes):
-   - Header (14 bytes):
-     * Timestamp (8 bytes)
-     * Reference count (2 bytes)
-     * Change count (2 bytes)
-     * Fee (2 bytes)
-   - Core (128 bytes):
-     * Hash (32 bytes)
-     * From address (32 bytes)
-     * Signature (64 bytes)
-
-2. Variable-Length Data:
-   - JSON-encoded transaction changes
-   - Reference list
+1. Fixed-size record header (14 bytes)
+- Fixed-size core fields (128 bytes)
+- Variable-length data using binary encoding
+  - Changes array
+  - References array
 
 ### Indexes
 Multiple indexes are maintained for efficient queries:

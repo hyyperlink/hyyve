@@ -1,7 +1,6 @@
 package hyyve
 
 import (
-	"encoding/json"
 	"errors"
 	"os"
 	"sync"
@@ -41,20 +40,20 @@ const (
 )
 
 type Transaction struct {
-	Timestamp  int64               `json:"timestamp"`
-	Hash       string              `json:"hash"`
-	From       string              `json:"from"`
-	Signature  string              `json:"signature"`
-	Changes    []TransactionChange `json:"changes"`
-	References []string            `json:"references"`
-	Fee        uint64              `json:"fee"`
+	Timestamp  int64
+	Hash       string
+	From       string
+	Signature  string
+	Changes    []TransactionChange
+	References []string
+	Fee        uint64
 }
 
 type TransactionChange struct {
-	To              string          `json:"to"`
-	Amount          uint64          `json:"amount"`
-	InstructionType string          `json:"instruction_type,omitempty"`
-	InstructionData json.RawMessage `json:"instruction_data,omitempty"`
+	To              string
+	Amount          uint64
+	InstructionType string
+	InstructionData []byte
 }
 
 type DB struct {

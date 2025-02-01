@@ -3,17 +3,25 @@ package hyyve
 import (
 	"bytes"
 	"encoding/binary"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"math/rand"
 	"os"
+	"runtime"
 	"sort"
 	"strings"
 	"sync"
 	"sync/atomic"
+	"time"
 )
+
+var bufferPool = sync.Pool{
+	New: func() interface{} {
+		b := make([]byte, 4096)
+		return &b
+	},
+}
 
 // Create a new skip list
 func NewSkipList() *SkipList {
@@ -180,24 +188,31 @@ func (db *DB) loadIndex() error {
 			return err
 		}
 
-		varData := make([]byte, varDataSize)
+		varDataPtr := bufferPool.Get().(*[]byte)
+		varData := *varDataPtr
+		if cap(varData) < int(varDataSize) {
+			varData = make([]byte, varDataSize) // If too big, allocate new
+			*varDataPtr = varData               // Update the pooled slice
+		} else {
+			varData = varData[:varDataSize]
+		}
+		defer bufferPool.Put(varDataPtr)
+
+		// Read variable length data
 		if _, err := io.ReadFull(db.file, varData); err != nil {
 			return err
 		}
 
-		// Unmarshal variable data
-		var extraData struct {
-			Changes    []TransactionChange `json:"changes"`
-			References []string            `json:"references"`
-		}
-		if err := json.Unmarshal(varData, &extraData); err != nil {
-			return err
+		// Read variable data
+		var varDataVar variableData
+		if err := varDataVar.UnmarshalBinary(varData); err != nil {
+			return fmt.Errorf("unmarshal var data: %w", err)
 		}
 
 		// Create transaction
 		tx := fixedRecordToTransaction(record)
-		tx.Changes = extraData.Changes
-		tx.References = extraData.References
+		tx.Changes = varDataVar.Changes
+		tx.References = varDataVar.References
 
 		// Add to batch
 		batch = append(batch, tx)
@@ -280,7 +295,7 @@ func (db *DB) SetTransaction(tx *Transaction) error {
 	return db.setTransactionInternal(tx)
 }
 
-// Update setTransactionInternal to handle references without locking
+// Update setTransactionInternal to use binary format
 func (db *DB) setTransactionInternal(tx *Transaction) error {
 	// Add to Bloom filter
 	db.bloom.Add(tx.Hash)
@@ -298,20 +313,18 @@ func (db *DB) setTransactionInternal(tx *Transaction) error {
 	}
 
 	// Prepare and write variable length data
-	varData := struct {
-		Changes    []TransactionChange `json:"changes"`
-		References []string            `json:"references"`
-	}{
+	varData := &variableData{
 		Changes:    tx.Changes,
 		References: tx.References,
 	}
 
-	varBytes, err := json.Marshal(varData)
+	// Use binary marshaling
+	varBytes, err := varData.MarshalBinary()
 	if err != nil {
 		return fmt.Errorf("marshal var data: %w", err)
 	}
 
-	// Write variable data size and content
+	// Write size and data
 	if err := binary.Write(db.file, binary.BigEndian, uint32(len(varBytes))); err != nil {
 		return fmt.Errorf("write var size: %w", err)
 	}
@@ -349,6 +362,7 @@ func (db *DB) setTransactionInternal(tx *Transaction) error {
 	return nil
 }
 
+// Update readTransactionFromOffset to use binary format
 func (db *DB) readTransactionFromOffset(offset int64) (*Transaction, error) {
 	db.filePos.Lock()
 	defer db.filePos.Unlock()
@@ -358,9 +372,23 @@ func (db *DB) readTransactionFromOffset(offset int64) (*Transaction, error) {
 		return nil, err
 	}
 
-	// Read fixed record
-	record, err := db.readFixedRecord(offset)
-	if err != nil {
+	// Get buffer from pool for header
+	headerBufPtr := bufferPool.Get().(*[]byte)
+	headerBuf := (*headerBufPtr)[:HeaderSize]
+	defer bufferPool.Put(headerBufPtr)
+
+	// Read header
+	if _, err := io.ReadFull(db.file, headerBuf); err != nil {
+		return nil, err
+	}
+
+	record := &FixedRecord{}
+	if err := record.Header.UnmarshalBinary(headerBuf); err != nil {
+		return nil, err
+	}
+
+	// Read core fields
+	if err := binary.Read(db.file, binary.BigEndian, &record.Core); err != nil {
 		return nil, err
 	}
 
@@ -373,24 +401,31 @@ func (db *DB) readTransactionFromOffset(offset int64) (*Transaction, error) {
 		return nil, err
 	}
 
+	// Get buffer from pool for variable data
+	varDataPtr := bufferPool.Get().(*[]byte)
+	varData := *varDataPtr
+	if cap(varData) < int(varDataSize) {
+		varData = make([]byte, varDataSize) // If too big, allocate new
+		*varDataPtr = varData               // Update the pooled slice
+	} else {
+		varData = varData[:varDataSize]
+	}
+	defer bufferPool.Put(varDataPtr)
+
 	// Read variable length data
-	varData := make([]byte, varDataSize)
 	if _, err := io.ReadFull(db.file, varData); err != nil {
 		return nil, err
 	}
 
-	// Unmarshal variable data
-	var extraData struct {
-		Changes    []TransactionChange `json:"changes"`
-		References []string            `json:"references"`
-	}
-	if err := json.Unmarshal(varData, &extraData); err != nil {
-		return nil, err
+	// Read variable data
+	var varDataVar variableData
+	if err := varDataVar.UnmarshalBinary(varData); err != nil {
+		return nil, fmt.Errorf("unmarshal var data: %w", err)
 	}
 
 	// Add variable data to transaction
-	tx.Changes = extraData.Changes
-	tx.References = extraData.References
+	tx.Changes = varDataVar.Changes
+	tx.References = varDataVar.References
 
 	return tx, nil
 }
@@ -897,9 +932,10 @@ func (db *DB) BatchGetTransactions(hashes []string) *BatchGetResult {
 	db.mu.RLock()
 	defer db.mu.RUnlock()
 
+	// Pre-allocate slices with capacity
 	result := &BatchGetResult{
-		Transactions: make(map[string]*Transaction),
-		Errors:       make(map[string]error),
+		Transactions: make(map[string]*Transaction, len(hashes)),
+		Errors:       make(map[string]error, len(hashes)),
 	}
 
 	// Sort hashes by file offset for sequential reads
@@ -930,4 +966,289 @@ func (db *DB) BatchGetTransactions(hashes []string) *BatchGetResult {
 	}
 
 	return result
+}
+
+// Add binary marshaling methods to TransactionChange
+func (tc *TransactionChange) MarshalBinary() ([]byte, error) {
+	// Calculate total size needed
+	size := 8 + // Amount (uint64)
+		4 + len(tc.To) + // To length + string
+		4 + len(tc.InstructionType) + // Type length + string
+		4 + len(tc.InstructionData) // Data length + bytes
+
+	buf := make([]byte, size)
+	offset := 0
+
+	// Write Amount
+	binary.BigEndian.PutUint64(buf[offset:], tc.Amount)
+	offset += 8
+
+	// Write To
+	binary.BigEndian.PutUint32(buf[offset:], uint32(len(tc.To)))
+	offset += 4
+	copy(buf[offset:], tc.To)
+	offset += len(tc.To)
+
+	// Write InstructionType
+	binary.BigEndian.PutUint32(buf[offset:], uint32(len(tc.InstructionType)))
+	offset += 4
+	copy(buf[offset:], tc.InstructionType)
+	offset += len(tc.InstructionType)
+
+	// Write InstructionData
+	binary.BigEndian.PutUint32(buf[offset:], uint32(len(tc.InstructionData)))
+	offset += 4
+	copy(buf[offset:], tc.InstructionData)
+
+	return buf, nil
+}
+
+func (tc *TransactionChange) UnmarshalBinary(data []byte) error {
+	if len(data) < 8 {
+		return ErrCorruptedData
+	}
+
+	offset := 0
+
+	// Read Amount
+	tc.Amount = binary.BigEndian.Uint64(data[offset:])
+	offset += 8
+
+	// Read To
+	if len(data) < offset+4 {
+		return ErrCorruptedData
+	}
+	toLen := binary.BigEndian.Uint32(data[offset:])
+	offset += 4
+
+	if len(data) < offset+int(toLen) {
+		return ErrCorruptedData
+	}
+	tc.To = string(data[offset : offset+int(toLen)])
+	offset += int(toLen)
+
+	// Read InstructionType
+	if len(data) < offset+4 {
+		return ErrCorruptedData
+	}
+	typeLen := binary.BigEndian.Uint32(data[offset:])
+	offset += 4
+
+	if len(data) < offset+int(typeLen) {
+		return ErrCorruptedData
+	}
+	tc.InstructionType = string(data[offset : offset+int(typeLen)])
+	offset += int(typeLen)
+
+	// Read InstructionData
+	if len(data) < offset+4 {
+		return ErrCorruptedData
+	}
+	dataLen := binary.BigEndian.Uint32(data[offset:])
+	offset += 4
+
+	if len(data) < offset+int(dataLen) {
+		return ErrCorruptedData
+	}
+	tc.InstructionData = make([]byte, dataLen)
+	copy(tc.InstructionData, data[offset:offset+int(dataLen)])
+
+	return nil
+}
+
+// Add binary marshaling for variable data struct
+type variableData struct {
+	Changes    []TransactionChange
+	References []string
+}
+
+func (vd *variableData) MarshalBinary() ([]byte, error) {
+	// Calculate size
+	size := 4 // Number of changes
+	for _, change := range vd.Changes {
+		changeBytes, err := change.MarshalBinary()
+		if err != nil {
+			return nil, err
+		}
+		size += 4 + len(changeBytes) // Length + data
+	}
+
+	size += 4 // Number of references
+	for _, ref := range vd.References {
+		size += 4 + len(ref) // Length + string
+	}
+
+	// Write data
+	buf := make([]byte, size)
+	offset := 0
+
+	// Write changes
+	binary.BigEndian.PutUint32(buf[offset:], uint32(len(vd.Changes)))
+	offset += 4
+	for _, change := range vd.Changes {
+		changeBytes, _ := change.MarshalBinary()
+		binary.BigEndian.PutUint32(buf[offset:], uint32(len(changeBytes)))
+		offset += 4
+		copy(buf[offset:], changeBytes)
+		offset += len(changeBytes)
+	}
+
+	// Write references
+	binary.BigEndian.PutUint32(buf[offset:], uint32(len(vd.References)))
+	offset += 4
+	for _, ref := range vd.References {
+		binary.BigEndian.PutUint32(buf[offset:], uint32(len(ref)))
+		offset += 4
+		copy(buf[offset:], ref)
+		offset += len(ref)
+	}
+
+	return buf, nil
+}
+
+func (vd *variableData) UnmarshalBinary(data []byte) error {
+	if len(data) < 4 {
+		return ErrCorruptedData
+	}
+
+	offset := 0
+
+	// Read changes
+	changeCount := binary.BigEndian.Uint32(data[offset:])
+	offset += 4
+
+	vd.Changes = make([]TransactionChange, changeCount)
+	for i := range vd.Changes {
+		if len(data) < offset+4 {
+			return ErrCorruptedData
+		}
+		changeLen := binary.BigEndian.Uint32(data[offset:])
+		offset += 4
+
+		if len(data) < offset+int(changeLen) {
+			return ErrCorruptedData
+		}
+		if err := vd.Changes[i].UnmarshalBinary(data[offset : offset+int(changeLen)]); err != nil {
+			return err
+		}
+		offset += int(changeLen)
+	}
+
+	// Read references
+	if len(data) < offset+4 {
+		return ErrCorruptedData
+	}
+	refCount := binary.BigEndian.Uint32(data[offset:])
+	offset += 4
+
+	vd.References = make([]string, refCount)
+	for i := range vd.References {
+		if len(data) < offset+4 {
+			return ErrCorruptedData
+		}
+		refLen := binary.BigEndian.Uint32(data[offset:])
+		offset += 4
+
+		if len(data) < offset+int(refLen) {
+			return ErrCorruptedData
+		}
+		vd.References[i] = string(data[offset : offset+int(refLen)])
+		offset += int(refLen)
+	}
+
+	return nil
+}
+
+// BatchConfig holds batch processing configuration
+type BatchConfig struct {
+	WriteBatchSize int
+	ReadBatchSize  int
+	MemoryLimit    int64
+	TargetLatency  time.Duration
+	MaxThroughput  float64
+}
+
+func (db *DB) AutoTuneBatchSize() BatchConfig {
+	const (
+		minBatchSize = 10                    // Keep small for writes
+		maxBatchSize = 1000                  // Cap max to avoid memory bloat
+		targetMem    = 256 * 1024 * 1024     // 256MB (reduced further)
+		cooldown     = 50 * time.Millisecond // Faster testing
+	)
+
+	var optimal BatchConfig
+	var bestWriteThroughput float64
+	var bestReadThroughput float64
+
+	// Test batch sizes in smaller increments for more granular optimization
+	for batchSize := minBatchSize; batchSize <= maxBatchSize; batchSize += batchSize / 2 {
+		runtime.GC()
+
+		// Measure write performance
+		var m runtime.MemStats
+		runtime.ReadMemStats(&m)
+		startMem := m.HeapAlloc
+
+		txs := make([]*Transaction, batchSize)
+		for i := range txs {
+			tx := &Transaction{
+				Hash:      fmt.Sprintf("tune_%d", i),
+				Timestamp: time.Now().UnixNano(),
+			}
+			txs[i] = tx
+		}
+
+		writeStart := time.Now()
+		if err := db.BatchSetTransactions(txs); err != nil {
+			continue
+		}
+		writeDuration := time.Since(writeStart)
+
+		runtime.ReadMemStats(&m)
+		memUsed := int64(m.HeapAlloc - startMem)
+		if memUsed < 0 {
+			memUsed = 0
+		}
+
+		writeThroughput := float64(batchSize) / writeDuration.Seconds()
+
+		// Measure read performance
+		hashes := make([]string, batchSize)
+		for i := range hashes {
+			hashes[i] = fmt.Sprintf("tune_%d", i)
+		}
+
+		readStart := time.Now()
+		result := db.BatchGetTransactions(hashes)
+		readDuration := time.Since(readStart)
+
+		if len(result.Transactions) != batchSize {
+			continue
+		}
+
+		readThroughput := float64(batchSize) / readDuration.Seconds()
+
+		// Weight read performance more heavily in the decision
+		if memUsed < targetMem {
+			// Prioritize read performance (2x weight)
+			effectiveThroughput := readThroughput*2 + writeThroughput
+
+			if effectiveThroughput > (bestReadThroughput*2 + bestWriteThroughput) {
+				bestWriteThroughput = writeThroughput
+				bestReadThroughput = readThroughput
+				optimal.WriteBatchSize = batchSize
+				optimal.ReadBatchSize = batchSize
+				optimal.MemoryLimit = memUsed
+				optimal.TargetLatency = writeDuration
+				optimal.MaxThroughput = readThroughput // Focus on read throughput
+			}
+		}
+
+		time.Sleep(cooldown)
+	}
+
+	// Adjust read batch size independently
+	optimal.ReadBatchSize = optimal.WriteBatchSize / 4 // Smaller read batches for better throughput
+
+	return optimal
 }
