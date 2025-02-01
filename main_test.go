@@ -23,7 +23,7 @@ func createTestDB(t *testing.T) (*DB, func()) {
 	}
 
 	db, err := Open(Options{
-		FilePath: filepath.Join(dir, "test.db"),
+		FilePath: filepath.Join(dir, "test.hv"),
 	})
 	if err != nil {
 		os.RemoveAll(dir)
@@ -700,7 +700,7 @@ func BenchmarkOperations(b *testing.B) {
 	defer os.RemoveAll(dir)
 
 	db, err := Open(Options{
-		FilePath: filepath.Join(dir, "bench.db"),
+		FilePath: filepath.Join(dir, "bench.hv"),
 	})
 	if err != nil {
 		b.Fatalf("failed to open db: %v", err)
@@ -768,7 +768,7 @@ func BenchmarkProfile(b *testing.B) {
 	defer os.RemoveAll(dir)
 
 	db, err := Open(Options{
-		FilePath: filepath.Join(dir, "profile.db"),
+		FilePath: filepath.Join(dir, "profile.hv"),
 	})
 	if err != nil {
 		b.Fatalf("failed to open db: %v", err)
@@ -811,7 +811,7 @@ func createBenchDB(b *testing.B) (*DB, func()) {
 	}
 
 	db, err := Open(Options{
-		FilePath: filepath.Join(dir, "bench.db"),
+		FilePath: filepath.Join(dir, "bench.hv"),
 	})
 	if err != nil {
 		os.RemoveAll(dir)
