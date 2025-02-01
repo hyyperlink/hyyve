@@ -584,9 +584,15 @@ func (db *DB) GetForwardRefs(hash string) ([]string, error) {
 	db.mu.RLock()
 	defer db.mu.RUnlock()
 
+	// First check if transaction exists
+	if _, exists := db.hashIndex[hash]; !exists {
+		return nil, ErrKeyNotFound
+	}
+
+	// Return empty slice if no references (instead of error)
 	refs, exists := db.forwardRefs[hash]
 	if !exists {
-		return nil, ErrKeyNotFound
+		return []string{}, nil
 	}
 
 	// Return a copy to prevent external modification
@@ -600,9 +606,15 @@ func (db *DB) GetBackwardRefs(hash string) ([]string, error) {
 	db.mu.RLock()
 	defer db.mu.RUnlock()
 
+	// First check if transaction exists
+	if _, exists := db.hashIndex[hash]; !exists {
+		return nil, ErrKeyNotFound
+	}
+
+	// Return empty slice if no references
 	refs, exists := db.backwardRefs[hash]
 	if !exists {
-		return nil, ErrKeyNotFound
+		return []string{}, nil
 	}
 
 	result := make([]string, len(refs))

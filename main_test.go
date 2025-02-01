@@ -7,6 +7,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -415,4 +416,130 @@ func TestReferenceScenarios(t *testing.T) {
 			t.Errorf("expected ErrInvalidReference, got %v", err)
 		}
 	})
+}
+
+func TestDuplicateReferences(t *testing.T) {
+	db, cleanup := createTestDB(t)
+	defer cleanup()
+
+	// Create base transaction
+	tx1 := createTestTransaction()
+	tx1.Hash = "tx1"
+	if err := db.SetTransaction(tx1); err != nil {
+		t.Fatal(err)
+	}
+
+	// Create transaction with duplicate references
+	tx2 := createTestTransaction()
+	tx2.Hash = "tx2"
+	tx2.References = []string{"tx1", "tx1"} // Duplicate reference
+
+	err := db.SetTransaction(tx2)
+	if !errors.Is(err, ErrInvalidReference) {
+		t.Errorf("expected ErrInvalidReference for duplicate reference, got %v", err)
+	}
+	if err == nil || !strings.Contains(err.Error(), "duplicate reference") {
+		t.Errorf("expected error message to mention duplicate reference, got %v", err)
+	}
+}
+
+func TestCanArchive(t *testing.T) {
+	db, cleanup := createTestDB(t)
+	defer cleanup()
+
+	// Create base transaction
+	tx1 := createTestTransaction()
+	tx1.Hash = "tx1"
+	if err := db.SetTransaction(tx1); err != nil {
+		t.Fatal(err)
+	}
+
+	// Initially should be archivable (no references)
+	if !db.CanArchive("tx1") {
+		t.Error("tx1 should be archivable when it has no references")
+	}
+
+	// Create transaction that references tx1
+	tx2 := createTestTransaction()
+	tx2.Hash = "tx2"
+	tx2.References = []string{"tx1"}
+	if err := db.SetTransaction(tx2); err != nil {
+		t.Fatal(err)
+	}
+
+	// Now tx1 should not be archivable
+	if db.CanArchive("tx1") {
+		t.Error("tx1 should not be archivable when referenced by tx2")
+	}
+
+	// tx2 should be archivable (nothing references it)
+	if !db.CanArchive("tx2") {
+		t.Error("tx2 should be archivable when it has no references")
+	}
+}
+
+func TestReferenceQueries(t *testing.T) {
+	db, cleanup := createTestDB(t)
+	defer cleanup()
+
+	// Create a chain of transactions: tx1 <- tx2 <- tx3
+	tx1 := createTestTransaction()
+	tx1.Hash = "tx1"
+	if err := db.SetTransaction(tx1); err != nil {
+		t.Fatal(err)
+	}
+
+	tx2 := createTestTransaction()
+	tx2.Hash = "tx2"
+	tx2.References = []string{"tx1"}
+	if err := db.SetTransaction(tx2); err != nil {
+		t.Fatal(err)
+	}
+
+	tx3 := createTestTransaction()
+	tx3.Hash = "tx3"
+	tx3.References = []string{"tx2"}
+	if err := db.SetTransaction(tx3); err != nil {
+		t.Fatal(err)
+	}
+
+	// Check forward references (what each tx references)
+	fwd1, err := db.GetForwardRefs("tx1")
+	if err != nil {
+		t.Errorf("unexpected error for tx1 forward refs: %v", err)
+	}
+	if len(fwd1) != 0 {
+		t.Errorf("tx1 should have no forward refs, got %v", fwd1)
+	}
+
+	fwd2, err := db.GetForwardRefs("tx2")
+	if err != nil {
+		t.Errorf("failed to get tx2 forward refs: %v", err)
+	}
+	if len(fwd2) != 1 || fwd2[0] != "tx1" {
+		t.Errorf("tx2 should reference tx1, got %v", fwd2)
+	}
+
+	// Check backward references (what references each tx)
+	back1, err := db.GetBackwardRefs("tx1")
+	if err != nil {
+		t.Errorf("failed to get tx1 backward refs: %v", err)
+	}
+	if len(back1) != 1 || back1[0] != "tx2" {
+		t.Errorf("tx1 should be referenced by tx2, got %v", back1)
+	}
+
+	back2, err := db.GetBackwardRefs("tx2")
+	if err != nil {
+		t.Errorf("failed to get tx2 backward refs: %v", err)
+	}
+	if len(back2) != 1 || back2[0] != "tx3" {
+		t.Errorf("tx2 should be referenced by tx3, got %v", back2)
+	}
+
+	// Test non-existent transaction
+	_, err = db.GetForwardRefs("nonexistent")
+	if !errors.Is(err, ErrKeyNotFound) {
+		t.Errorf("expected ErrKeyNotFound for nonexistent tx, got %v", err)
+	}
 }
