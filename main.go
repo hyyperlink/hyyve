@@ -1,3 +1,30 @@
+// Package hyyve provides a specialized storage engine designed for high-throughput
+// transaction storage and fast reference traversal. It implements a persistent,
+// hash-indexed database optimized for directed acyclic graphs (DAG) where
+// transactions can reference multiple previous transactions.
+//
+// Key features:
+//   - O(1) hash-based transaction lookups
+//   - Efficient reference graph traversal with cycle detection
+//   - Address-based transaction history with timestamp filtering
+//   - Auto-tuning for optimal batch sizes
+//   - Thread-safe concurrent access
+//   - Buffer pooling for reduced GC pressure
+//
+// Basic usage:
+//
+//	db, err := hyyve.Open(hyyve.Options{
+//		FilePath: "transactions.hv",
+//	})
+//	if err != nil {
+//		log.Fatal(err)
+//	}
+//	defer db.Close()
+//
+// For detailed benchmarks, examples, and documentation, visit:
+//
+//	https://pkg.go.dev/github.com/hyyperlink/hyyve
+//	https://github.com/hyyperlink/hyyve
 package hyyve
 
 import (
@@ -24,6 +51,7 @@ var bufferPool = sync.Pool{
 }
 
 // Create a new skip list
+// NewSkipList creates a new skip list with the maximum configured height.
 func NewSkipList() *SkipList {
 	return &SkipList{
 		head: &SkipNode{
@@ -34,7 +62,9 @@ func NewSkipList() *SkipList {
 	}
 }
 
-// Randomly determine level for a new node
+// randomLevel determines the height of a new skip list node.
+// It uses a probabilistic algorithm where each level has SkipListP chance
+// of being included, up to MaxSkipListLevel.
 func (sl *SkipList) randomLevel() int {
 	level := 1
 	for level < sl.maxLevel && rand.Float64() < SkipListP {
@@ -43,7 +73,8 @@ func (sl *SkipList) randomLevel() int {
 	return level
 }
 
-// Insert a value into the skip list
+// Insert adds a transaction hash to the skip list at the given timestamp.
+// If multiple transactions share the same timestamp, they are stored together.
 func (sl *SkipList) Insert(timestamp int64, hash string) {
 	update := make([]*SkipNode, sl.maxLevel)
 	current := sl.head
@@ -77,6 +108,7 @@ func (sl *SkipList) Insert(timestamp int64, hash string) {
 }
 
 // Create a new Bloom filter
+// NewBloomFilter creates a new Bloom filter with the configured size and hash count.
 func NewBloomFilter() *BloomFilter {
 	return &BloomFilter{
 		bits:    make([]uint64, BloomFilterSize/64), // 64 bits per uint64
@@ -84,7 +116,8 @@ func NewBloomFilter() *BloomFilter {
 	}
 }
 
-// Add an item to the Bloom filter
+// Add inserts an item into the Bloom filter.
+// The item is hashed multiple times to set corresponding bits in the filter.
 func (bf *BloomFilter) Add(item string) {
 	h1, h2 := hash128(item)
 	for i := uint(0); i < bf.numHash; i++ {
@@ -94,7 +127,8 @@ func (bf *BloomFilter) Add(item string) {
 	}
 }
 
-// Check if an item might exist
+// MightContain checks if an item might exist in the Bloom filter.
+// Returns false if the item definitely doesn't exist, true if it might exist.
 func (bf *BloomFilter) MightContain(item string) bool {
 	h1, h2 := hash128(item)
 	for i := uint(0); i < bf.numHash; i++ {
@@ -108,6 +142,8 @@ func (bf *BloomFilter) MightContain(item string) bool {
 }
 
 // Simple hash function for strings
+// hash128 generates two 64-bit hash values for use in the Bloom filter.
+// It uses a simple but effective string hashing algorithm.
 func hash128(s string) (uint64, uint64) {
 	h1 := uint64(0)
 	h2 := uint64(0)
@@ -118,6 +154,8 @@ func hash128(s string) (uint64, uint64) {
 	return h1, h2
 }
 
+// Open creates or opens a HyyveKV database at the specified file path.
+// It initializes all necessary indices and recovers the database state.
 func Open(opts Options) (*DB, error) {
 	file, err := os.OpenFile(opts.FilePath, os.O_RDWR|os.O_CREATE, 0666)
 	if err != nil {
@@ -237,6 +275,8 @@ func (db *DB) loadIndex() error {
 }
 
 // Helper function to process a batch of transactions
+// processBatch handles a batch of transactions during index loading.
+// It sorts transactions by dependencies and updates all indices.
 func (db *DB) processBatch(batch []*Transaction, startOffset int64) error {
 	// Sort transactions by dependencies
 	sorted, err := db.DependencySort(batch)
@@ -266,6 +306,8 @@ func (db *DB) processBatch(batch []*Transaction, startOffset int64) error {
 	return nil
 }
 
+// Close safely shuts down the database, ensuring all data is written.
+// After closing, no further operations can be performed on the database.
 func (db *DB) Close() error {
 	db.mu.Lock()
 	defer db.mu.Unlock()
@@ -278,7 +320,8 @@ func (db *DB) Close() error {
 	return db.file.Close()
 }
 
-// Update SetTransaction to avoid lock ordering issues
+// SetTransaction stores a single transaction in the database.
+// It validates the transaction and its references before storage.
 func (db *DB) SetTransaction(tx *Transaction) error {
 	// Validate before taking the write lock
 	if err := db.ValidateReferences(tx); err != nil {
@@ -296,6 +339,8 @@ func (db *DB) SetTransaction(tx *Transaction) error {
 }
 
 // Update setTransactionInternal to use binary format
+// setTransactionInternal performs the actual transaction storage operation.
+// It handles binary serialization and index updates.
 func (db *DB) setTransactionInternal(tx *Transaction) error {
 	// Add to Bloom filter
 	db.bloom.Add(tx.Hash)
@@ -363,6 +408,8 @@ func (db *DB) setTransactionInternal(tx *Transaction) error {
 }
 
 // Update readTransactionFromOffset to use binary format
+// readTransactionFromOffset reads and deserializes a transaction from disk.
+// It uses buffer pooling to minimize allocations during reads.
 func (db *DB) readTransactionFromOffset(offset int64) (*Transaction, error) {
 	db.filePos.Lock()
 	defer db.filePos.Unlock()
@@ -430,6 +477,8 @@ func (db *DB) readTransactionFromOffset(offset int64) (*Transaction, error) {
 	return tx, nil
 }
 
+// GetTransaction retrieves a transaction by its hash.
+// Returns ErrKeyNotFound if the transaction doesn't exist.
 func (db *DB) GetTransaction(hash string) (*Transaction, error) {
 	db.mu.RLock()
 	defer db.mu.RUnlock()
@@ -446,7 +495,8 @@ func (db *DB) GetTransaction(hash string) (*Transaction, error) {
 	return db.readTransactionFromOffset(offset)
 }
 
-// Serialize header to bytes
+// MarshalBinary serializes the record header into a binary format.
+// The resulting bytes are in a fixed-size format suitable for disk storage.
 func (h *RecordHeader) MarshalBinary() ([]byte, error) {
 	buf := make([]byte, HeaderSize)
 	binary.BigEndian.PutUint64(buf[0:8], uint64(h.Timestamp))
@@ -456,7 +506,8 @@ func (h *RecordHeader) MarshalBinary() ([]byte, error) {
 	return buf, nil
 }
 
-// Deserialize header from bytes
+// UnmarshalBinary deserializes a binary format into a record header.
+// It includes validation of the deserialized values.
 func (h *RecordHeader) UnmarshalBinary(data []byte) error {
 	if len(data) < HeaderSize {
 		return ErrCorruptedData
@@ -477,7 +528,8 @@ func (h *RecordHeader) UnmarshalBinary(data []byte) error {
 	return nil
 }
 
-// Convert transaction to fixed record
+// transactionToFixedRecord converts a transaction into a fixed-size record format.
+// It handles padding and size validation of fields.
 func transactionToFixedRecord(tx *Transaction) (*FixedRecord, error) {
 	record := &FixedRecord{}
 
@@ -511,7 +563,8 @@ func transactionToFixedRecord(tx *Transaction) (*FixedRecord, error) {
 	return record, nil
 }
 
-// Convert fixed record back to transaction
+// fixedRecordToTransaction converts a fixed-size record back into a transaction.
+// It handles trimming of padded fields.
 func fixedRecordToTransaction(record *FixedRecord) *Transaction {
 	tx := &Transaction{
 		Timestamp: record.Header.Timestamp,
@@ -526,7 +579,8 @@ func fixedRecordToTransaction(record *FixedRecord) *Transaction {
 	return tx
 }
 
-// Write a fixed record to disk
+// writeFixedRecord writes a fixed-size record to disk.
+// Returns the offset where the record was written.
 func (db *DB) writeFixedRecord(record *FixedRecord) (int64, error) {
 	db.filePos.Lock()
 	defer db.filePos.Unlock()
@@ -859,7 +913,8 @@ func (db *DB) DependencySort(txs []*Transaction) ([]*Transaction, error) {
 	return sorted, nil
 }
 
-// Update BatchSetTransactions to use sorted transactions
+// BatchSetTransactions stores multiple transactions in dependency order.
+// It validates all transactions and their references before storage.
 func (db *DB) BatchSetTransactions(txs []*Transaction) error {
 	validationResult := db.ValidateTransactionBatch(txs)
 
@@ -889,7 +944,8 @@ func (db *DB) BatchSetTransactions(txs []*Transaction) error {
 	return nil
 }
 
-// Add address-based queries
+// GetAddressTransactions retrieves transactions associated with an address.
+// Returns transactions newer than 'after' timestamp, limited to 'limit' results.
 func (db *DB) GetAddressTransactions(addr string, after int64, limit int) ([]*Transaction, error) {
 	db.mu.RLock()
 	defer db.mu.RUnlock()
@@ -927,7 +983,8 @@ func (db *DB) GetAddressTransactions(addr string, after int64, limit int) ([]*Tr
 	return txs, nil
 }
 
-// Update BatchGetTransactions to use helper
+// BatchGetTransactions retrieves multiple transactions by their hashes.
+// It optimizes disk access by sorting reads by file offset.
 func (db *DB) BatchGetTransactions(hashes []string) *BatchGetResult {
 	db.mu.RLock()
 	defer db.mu.RUnlock()
@@ -968,7 +1025,8 @@ func (db *DB) BatchGetTransactions(hashes []string) *BatchGetResult {
 	return result
 }
 
-// Add binary marshaling methods to TransactionChange
+// MarshalBinary serializes a transaction change into a binary format.
+// The format includes length-prefixed variable-size fields.
 func (tc *TransactionChange) MarshalBinary() ([]byte, error) {
 	// Calculate total size needed
 	size := 8 + // Amount (uint64)
@@ -1003,6 +1061,8 @@ func (tc *TransactionChange) MarshalBinary() ([]byte, error) {
 	return buf, nil
 }
 
+// UnmarshalBinary deserializes a binary format into a transaction change.
+// It includes validation of the data format and field sizes.
 func (tc *TransactionChange) UnmarshalBinary(data []byte) error {
 	if len(data) < 8 {
 		return ErrCorruptedData
@@ -1168,6 +1228,8 @@ type BatchConfig struct {
 	MaxThroughput  float64
 }
 
+// AutoTuneBatchSize determines optimal batch sizes for the current system.
+// It runs performance tests to find the best balance of throughput and memory usage.
 func (db *DB) AutoTuneBatchSize() BatchConfig {
 	const (
 		minBatchSize = 10                    // Keep small for writes

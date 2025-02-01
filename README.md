@@ -53,8 +53,13 @@ HyyveKV is a specialized storage engine designed for high-throughput transaction
 All benchmarks run with 24 parallel workers. Numbers represent average performance across multiple runs.
 
 ## Installation
+
 ```bash
+# Use latest version
 go get github.com/hyyperlink/hyyve
+
+# Or pin to specific version
+go get github.com/hyyperlink/hyyve@v0.2.2
 ```
 
 ## Basic Usage
