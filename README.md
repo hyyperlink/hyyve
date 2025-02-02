@@ -530,6 +530,46 @@ fmt.Printf("Target latency: %v\n", config.TargetLatency)
 fmt.Printf("Max throughput: %.2f TPS\n", config.MaxThroughput)
 ```
 
+## Development
+
+HyyveKV includes a Makefile with several useful targets for development and testing:
+
+```bash
+# Run all tests
+make test
+
+# Run basic benchmarks (results in bench.txt)
+make bench
+
+# Run comprehensive benchmarks
+make benchmark
+
+# Profile the code
+make cpu-profile  # CPU profiling
+make mem-profile  # Memory profiling
+make trace-profile # Execution trace
+make pprof        # Run all profiles
+
+# Clean up profiling files
+make clean
+
+# Show all available targets
+make help
+```
+
+The profiling targets generate files that can be analyzed with:
+- `go tool pprof` for CPU and memory profiles
+- `go tool trace` for execution traces
+
+Example profile analysis:
+```bash
+# Analyze CPU profile
+go tool pprof cpu.prof
+
+# View trace in browser
+go tool trace trace.out
+```
+
 ## License
 
 MIT License - Copyright (c) 2024 Hyyperlink
