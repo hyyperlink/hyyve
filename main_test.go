@@ -684,7 +684,7 @@ func BenchmarkAll(b *testing.B) {
 		writeTPS := float64(writeOps*writeSize) / writeTime.Seconds()
 		readTPS := float64(readOps*writeSize) / readTime.Seconds()
 
-		fmt.Fprintf(&results, "%9d | %11s | %12s | %14.2f | %14.2f\n",
+		fmt.Fprintf(&results, "%10d | %12s | %13s | %15.2f | %14.2f\n",
 			writeSize, batchSize, dbSize, writeTPS, readTPS)
 	}
 
