@@ -11,6 +11,10 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"crypto/ed25519"
+
+	"github.com/mr-tron/base58"
 )
 
 // createTestDB creates and returns a DB with cleanup function
@@ -838,4 +842,53 @@ func BenchmarkAutoTune(b *testing.B) {
 	b.Logf("Memory Usage:     %s", humanReadableSize(config.MemoryLimit))
 	b.Logf("Target Latency:   %v", config.TargetLatency)
 	b.Logf("Max Throughput:   %.2f TPS", config.MaxThroughput)
+}
+
+func TestSignatureLengths(t *testing.T) {
+	// Create a test key pair
+	_, priv, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatalf("Failed to generate key pair: %v", err)
+	}
+
+	// Create a bunch of test messages and collect signature lengths
+	lengths := make(map[int]int) // length -> count
+	minLen := 999999
+	maxLen := 0
+	maxSig := ""
+
+	// Test 10,000 messages to be more thorough
+	for i := 0; i < 10000; i++ {
+		msg := fmt.Sprintf("test message %d", i)
+		sig := ed25519.Sign(priv, []byte(msg))
+
+		base58Sig := base58.Encode(sig)
+		length := len(base58Sig)
+
+		lengths[length]++
+
+		if length < minLen {
+			minLen = length
+		}
+		if length > maxLen {
+			maxLen = length
+			maxSig = base58Sig
+		}
+	}
+
+	t.Logf("Signature length analysis:")
+	t.Logf("Min length: %d", minLen)
+	t.Logf("Max length: %d", maxLen)
+	t.Logf("Longest signature: %s", maxSig)
+	t.Logf("Distribution:")
+	for length, count := range lengths {
+		percentage := float64(count) / 100.0
+		t.Logf("  %d chars: %d signatures (%.2f%%)", length, count, percentage)
+	}
+
+	// Verify our constant is correct
+	if maxLen > SignatureSize {
+		t.Errorf("SignatureSize constant %d is too small, found signature of length %d",
+			SignatureSize, maxLen)
+	}
 }
