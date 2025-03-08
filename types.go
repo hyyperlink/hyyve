@@ -38,12 +38,15 @@ const (
 	MinRecordSize = HeaderSize + CoreSize
 
 	// Field sizes
-	// HashSize is the size in bytes of transaction hashes
+	// HashSize is the size in characters for hex encoded SHA3-256 hashes
+	// Example: "bc1291a58dff1d0e8dafb32e9b6a4487aa2ee038eb31d857b1a21e07bfa9f51e"
 	HashSize = 64
-	// AddressSize is the size in bytes of addresses
+	// AddressSize is the max characters for base58 encoded Ed25519 public keys
+	// Example: "B5LKKpvY6XXpYsDEZSUrzGe58QHWxHReak9tQwzM2R8W"
 	AddressSize = 44
-	// SignatureSize is the size in bytes of signatures
-	SignatureSize = 64
+	// SignatureSize is the size in characters for base58 encoded Ed25519 signatures
+	// Example: "44uivokdp27bP7E8wHECetk2FRU1tq82F1w7ZrgZmeszQmvo72UW55vpsewYPEPjh8m8BidEzXRttmdxhKGJ9jXW"
+	SignatureSize = 88
 
 	// MaxSkipListLevel is the maximum height of the skip list
 	MaxSkipListLevel = 32

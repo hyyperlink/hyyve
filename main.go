@@ -30,7 +30,6 @@ package hyyve
 import (
 	"bytes"
 	"encoding/binary"
-	"errors"
 	"fmt"
 	"io"
 	"math/rand"
@@ -539,26 +538,23 @@ func transactionToFixedRecord(tx *Transaction) (*FixedRecord, error) {
 	record.Header.RefCount = uint16(len(tx.References))
 	record.Header.ChangeCount = uint16(len(tx.Changes))
 
-	// Copy hash (with padding/truncation if necessary)
-	hashBytes := []byte(tx.Hash)
-	if len(hashBytes) > HashSize {
-		return nil, errors.New("hash too long")
+	// Copy hash (must be exactly 64 chars)
+	if len(tx.Hash) != HashSize {
+		return nil, fmt.Errorf("invalid hash length: got %d, want %d", len(tx.Hash), HashSize)
 	}
-	copy(record.Core.Hash[:], hashBytes)
+	copy(record.Core.Hash[:], tx.Hash)
 
-	// Copy from address
-	fromBytes := []byte(tx.From)
-	if len(fromBytes) > AddressSize {
-		return nil, errors.New("address too long")
+	// Copy from address (must be 43 or 44 chars)
+	if len(tx.From) < 43 || len(tx.From) > 44 {
+		return nil, fmt.Errorf("invalid address length: got %d, want 43-44", len(tx.From))
 	}
-	copy(record.Core.From[:], fromBytes)
+	copy(record.Core.From[:], tx.From)
 
-	// Copy signature
-	sigBytes := []byte(tx.Signature)
-	if len(sigBytes) > SignatureSize {
-		return nil, errors.New("signature too long")
+	// Copy signature (must be 87 or 88 chars)
+	if len(tx.Signature) < 87 || len(tx.Signature) > 88 {
+		return nil, fmt.Errorf("invalid signature length: got %d, want 87-88", len(tx.Signature))
 	}
-	copy(record.Core.Signature[:], sigBytes)
+	copy(record.Core.Signature[:], tx.Signature)
 
 	return record, nil
 }
