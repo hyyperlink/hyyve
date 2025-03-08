@@ -33,15 +33,15 @@ const (
 	// HeaderSize is the size in bytes of the record header (timestamp + counts + fee)
 	HeaderSize = 14 // 8 + 2 + 2 + 2 (removed Flags)
 	// CoreSize is the size in bytes of the core transaction fields
-	CoreSize = 128 // 32 + 32 + 64
+	CoreSize = HashSize + AddressSize + SignatureSize
 	// MinRecordSize is the minimum size of a complete transaction record
 	MinRecordSize = HeaderSize + CoreSize
 
 	// Field sizes
 	// HashSize is the size in bytes of transaction hashes
-	HashSize = 32
+	HashSize = 64
 	// AddressSize is the size in bytes of addresses
-	AddressSize = 32
+	AddressSize = 44
 	// SignatureSize is the size in bytes of signatures
 	SignatureSize = 64
 

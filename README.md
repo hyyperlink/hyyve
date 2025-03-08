@@ -59,7 +59,7 @@ All benchmarks run with 24 parallel workers. Numbers represent average performan
 go get github.com/hyyperlink/hyyve
 
 # Or pin to specific version
-go get github.com/hyyperlink/hyyve@v0.2.2
+go get github.com/hyyperlink/hyyve@v0.3.0
 ```
 
 ## Basic Usage
@@ -115,8 +115,8 @@ func main() {
 
 ### Transactions
 Each transaction contains:
-- Hash: Unique identifier (32 bytes)
-- From: Source address (32 bytes)
+- Hash: Unique identifier (64 bytes)
+- From: Source address (44 bytes)
 - Changes: List of operations with:
   - To: Recipient address
   - Amount: Value
@@ -146,8 +146,8 @@ HyyveKV uses a hybrid storage format optimized for both random access and sequen
    - Change count (2 bytes)
    - Fee (2 bytes)
 2. Fixed-size core fields (128 bytes)
-   - Hash (32 bytes)
-   - From address (32 bytes)
+   - Hash (64 bytes)
+   - From address (44 bytes)
    - Signature (64 bytes)
 3. Variable-length data using binary encoding
    - Changes array
