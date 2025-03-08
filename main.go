@@ -40,8 +40,6 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
-
-	"github.com/mr-tron/base58"
 )
 
 var bufferPool = sync.Pool{
@@ -557,17 +555,6 @@ func transactionToFixedRecord(tx *Transaction) (*FixedRecord, error) {
 		return nil, fmt.Errorf("invalid signature length: got %d (want 87-88) for sig: %s",
 			len(tx.Signature), tx.Signature)
 	}
-
-	// Add debug logging for signature details
-	rawSig, err := base58.Decode(tx.Signature)
-	if err != nil {
-		return nil, fmt.Errorf("failed to decode signature: %v", err)
-	}
-	fmt.Printf("DEBUG: Signature analysis:\n")
-	fmt.Printf("  Base58 length: %d\n", len(tx.Signature))
-	fmt.Printf("  Raw bytes length: %d\n", len(rawSig))
-	fmt.Printf("  Signature: %s\n", tx.Signature)
-	fmt.Printf("  Raw bytes: %x\n", rawSig)
 
 	copy(record.Core.Signature[:], tx.Signature)
 
