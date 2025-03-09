@@ -49,6 +49,22 @@ var bufferPool = sync.Pool{
 	},
 }
 
+// SkipNode represents a node in the skip list index structure.
+// It maintains multiple forward pointers for efficient traversal.
+type SkipNode struct {
+	key     int64       // timestamp
+	value   []string    // transaction hashes at this timestamp
+	forward []*SkipNode // array of pointers to next nodes
+	level   int         // current node level
+}
+
+// SkipList implements a probabilistic data structure for efficient
+// timestamp-based queries with O(log n) complexity.
+type SkipList struct {
+	head     *SkipNode
+	maxLevel int
+}
+
 // Create a new skip list
 // NewSkipList creates a new skip list with the maximum configured height.
 func NewSkipList() *SkipList {
@@ -1311,4 +1327,63 @@ func (db *DB) AutoTuneBatchSize() BatchConfig {
 	optimal.ReadBatchSize = optimal.WriteBatchSize / 4 // Smaller read batches for better throughput
 
 	return optimal
+}
+
+// GetTransactionsByTimeRange returns all transactions with timestamps between start and end (inclusive).
+// It leverages the skip list structure for efficient O(log n + k) retrieval, where n is the total number
+// of unique timestamps and k is the number of transactions in the range.
+func (db *DB) GetTransactionsByTimeRange(start, end int64) ([]*Transaction, error) {
+	db.mu.RLock()
+	defer db.mu.RUnlock()
+
+	if db.isClosed {
+		return nil, ErrDatabaseClosed
+	}
+
+	if start > end {
+		return nil, fmt.Errorf("invalid range: start timestamp %d is after end timestamp %d", start, end)
+	}
+
+	// Use skip list to find all transaction hashes in the range
+	var hashes []string
+	current := db.timeSkipList.head
+
+	// Use higher levels to quickly find the start position
+	for i := db.timeSkipList.maxLevel - 1; i >= 0; i-- {
+		for current.forward[i] != nil && current.forward[i].key < start {
+			current = current.forward[i]
+		}
+	}
+
+	// Move to first node in range
+	current = current.forward[0]
+
+	// Collect all transaction hashes within range
+	for current != nil && current.key <= end {
+		hashes = append(hashes, current.value...)
+		current = current.forward[0]
+	}
+
+	if len(hashes) == 0 {
+		return nil, nil
+	}
+
+	// Use batch get for efficient retrieval
+	result := db.BatchGetTransactions(hashes)
+	if len(result.Errors) > 0 {
+		return nil, fmt.Errorf("failed to retrieve some transactions in range")
+	}
+
+	// Convert map to sorted slice
+	txs := make([]*Transaction, 0, len(result.Transactions))
+	for _, tx := range result.Transactions {
+		txs = append(txs, tx)
+	}
+
+	// Sort by timestamp
+	sort.Slice(txs, func(i, j int) bool {
+		return txs[i].Timestamp < txs[j].Timestamp
+	})
+
+	return txs, nil
 }

@@ -131,22 +131,6 @@ type FixedRecord struct {
 	Core   RecordCore
 }
 
-// SkipNode represents a node in the skip list index structure.
-// It maintains multiple forward pointers for efficient traversal.
-type SkipNode struct {
-	key     int64       // timestamp
-	value   []string    // transaction hashes at this timestamp
-	forward []*SkipNode // array of pointers to next nodes
-	level   int         // current node level
-}
-
-// SkipList implements a probabilistic data structure for efficient
-// timestamp-based queries with O(log n) complexity.
-type SkipList struct {
-	head     *SkipNode
-	maxLevel int
-}
-
 // BatchGetResult holds the results of a batch transaction retrieval operation.
 // It maps transaction hashes to either successfully retrieved transactions or errors.
 type BatchGetResult struct {
