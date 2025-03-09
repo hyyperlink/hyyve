@@ -46,9 +46,9 @@ func createTestDB(t *testing.T) (*DB, func()) {
 func createTestTransaction() *Transaction {
 	return &Transaction{
 		Timestamp: time.Now().UnixNano(),
-		Hash:      "0123456789abcdef0123456789abcdef",
-		From:      "abcdef0123456789abcdef0123456789",
-		Signature: "00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff",
+		Hash:      "29fcb4a4281a05d4569deb542e0612a3c8ca6c08d242eaee724d2ac20ab31696",
+		From:      "612a3c8ca6fc24d2a569deb542e0612c20abb4a42298",
+		Signature: "d6a1183a14bda344fc101243ce4a91e1cc10f47fabbdb410f47fabbdb410f47fabbdb4cfd4eef5297e008eed",
 		Changes: []TransactionChange{{
 			To:              "1111111111111111111111111111111111111111",
 			Amount:          1000,
@@ -351,7 +351,7 @@ func TestMultipleReferences(t *testing.T) {
 
 	// Create first transaction
 	tx1 := createTestTransaction()
-	tx1.Hash = "tx1"
+	tx1.Hash = "d6a118e1cc10f47fabbdb410f47fabbdb410f47fabbdb4cfd4eef5297e008eed"
 	tx1.References = []string{} // Use empty slice instead of nil
 
 	if err := db.SetTransaction(tx1); err != nil {
@@ -359,15 +359,15 @@ func TestMultipleReferences(t *testing.T) {
 	}
 
 	// Verify tx1 exists
-	_, err := db.GetTransaction("tx1")
+	_, err := db.GetTransaction(tx1.Hash)
 	if err != nil {
 		t.Fatalf("tx1 not found: %v", err)
 	}
 
 	// Create second transaction that references the first
 	tx2 := createTestTransaction()
-	tx2.Hash = "tx2"
-	tx2.References = []string{"tx1"}
+	tx2.Hash = "410f47fabbdb4cfd4eef5297e008eedd6a118e1cc10f47fabbdb410f47fabbdb"
+	tx2.References = []string{"d6a118e1cc10f47fabbdb410f47fabbdb410f47fabbdb4cfd4eef5297e008eed"}
 
 	if err := db.SetTransaction(tx2); err != nil {
 		t.Fatal(err)
@@ -378,14 +378,14 @@ func TestAddressHistoryOrder(t *testing.T) {
 	db, cleanup := createTestDB(t)
 	defer cleanup()
 
-	addr := "test_address"
+	addr := "612a3c8ca6fc24d2a569deb542e0612c20abb4a42298"
 	now := time.Now().UnixNano()
 
 	// Create transactions at different times
 	txs := []*Transaction{
-		{Hash: "tx1", From: addr, Timestamp: now - 2},
-		{Hash: "tx2", From: addr, Timestamp: now - 1},
-		{Hash: "tx3", From: addr, Timestamp: now},
+		{Hash: "110f47fabbdb4cfd4eef5297e008eedd6a118e1cc10f47fabbdb410f47fabbdb", From: addr, Timestamp: now - 2, Signature: "d6a1183a14bda344fc101243ce4a91e1cc10f47fabbdb410f47fabbdb410f47fabbdb4cfd4eef5297e008eed"},
+		{Hash: "210f47fabbdb4cfd4eef5297e008eedd6a118e1cc10f47fabbdb410f47fabbdb", From: addr, Timestamp: now - 1, Signature: "d6a1183a14bda344fc101243ce4a91e1cc10f47fabbdb410f47fabbdb410f47fabbdb4cfd4eef5297e008eed"},
+		{Hash: "310f47fabbdb4cfd4eef5297e008eedd6a118e1cc10f47fabbdb410f47fabbdb", From: addr, Timestamp: now, Signature: "d6a1183a14bda344fc101243ce4a91e1cc10f47fabbdb410f47fabbdb410f47fabbdb4cfd4eef5297e008eed"},
 	}
 
 	for _, tx := range txs {
@@ -404,7 +404,7 @@ func TestAddressHistoryOrder(t *testing.T) {
 	if len(history) != 3 {
 		t.Fatalf("expected 3 transactions, got %d", len(history))
 	}
-	if history[0].Hash != "tx3" || history[2].Hash != "tx1" {
+	if history[0].Hash != "310f47fabbdb4cfd4eef5297e008eedd6a118e1cc10f47fabbdb410f47fabbdb" || history[2].Hash != "110f47fabbdb4cfd4eef5297e008eedd6a118e1cc10f47fabbdb410f47fabbdb" {
 		t.Error("transactions not in correct order")
 	}
 }
@@ -430,15 +430,15 @@ func TestDuplicateReferences(t *testing.T) {
 
 	// Create base transaction
 	tx1 := createTestTransaction()
-	tx1.Hash = "tx1"
+	tx1.Hash = "d6a118e1cc10f47fabbdb410f47fabbdb410f47fabbdb4cfd4eef5297e008eed"
 	if err := db.SetTransaction(tx1); err != nil {
 		t.Fatal(err)
 	}
 
 	// Create transaction with duplicate references
 	tx2 := createTestTransaction()
-	tx2.Hash = "tx2"
-	tx2.References = []string{"tx1", "tx1"} // Duplicate reference
+	tx2.Hash = "410f47fabbdb4cfd4eef5297e008eedd6a118e1cc10f47fabbdb410f47fabbdb"
+	tx2.References = []string{"d6a118e1cc10f47fabbdb410f47fabbdb410f47fabbdb4cfd4eef5297e008eed", "d6a118e1cc10f47fabbdb410f47fabbdb410f47fabbdb4cfd4eef5297e008eed"} // Duplicate reference
 
 	err := db.SetTransaction(tx2)
 	if !errors.Is(err, ErrInvalidReference) {
@@ -455,7 +455,7 @@ func TestCanArchive(t *testing.T) {
 
 	// Create base transaction
 	tx1 := createTestTransaction()
-	tx1.Hash = "tx1"
+	tx1.Hash = "d6a118e1cc10f47fabbdb410f47fabbdb410f47fabbdb4cfd4eef5297e008eed"
 	if err := db.SetTransaction(tx1); err != nil {
 		t.Fatal(err)
 	}
@@ -467,19 +467,19 @@ func TestCanArchive(t *testing.T) {
 
 	// Create transaction that references tx1
 	tx2 := createTestTransaction()
-	tx2.Hash = "tx2"
-	tx2.References = []string{"tx1"}
+	tx2.Hash = "410f47fabbdb4cfd4eef5297e008eedd6a118e1cc10f47fabbdb410f47fabbdb"
+	tx2.References = []string{"d6a118e1cc10f47fabbdb410f47fabbdb410f47fabbdb4cfd4eef5297e008eed"}
 	if err := db.SetTransaction(tx2); err != nil {
 		t.Fatal(err)
 	}
 
 	// Now tx1 should not be archivable
-	if db.CanArchive("tx1") {
+	if db.CanArchive("d6a118e1cc10f47fabbdb410f47fabbdb410f47fabbdb4cfd4eef5297e008eed") {
 		t.Error("tx1 should not be archivable when referenced by tx2")
 	}
 
 	// tx2 should be archivable (nothing references it)
-	if !db.CanArchive("tx2") {
+	if !db.CanArchive("410f47fabbdb4cfd4eef5297e008eedd6a118e1cc10f47fabbdb410f47fabbdb") {
 		t.Error("tx2 should be archivable when it has no references")
 	}
 }
@@ -490,27 +490,28 @@ func TestReferenceQueries(t *testing.T) {
 
 	// Create a chain of transactions: tx1 <- tx2 <- tx3
 	tx1 := createTestTransaction()
-	tx1.Hash = "tx1"
+	tx1.Hash = "hash1_d6a118e1cc10f47fabbdb410f47fabbdb410f47fabbdb4cfd4eef5297e"
+	tx1.References = []string{}
 	if err := db.SetTransaction(tx1); err != nil {
 		t.Fatal(err)
 	}
 
 	tx2 := createTestTransaction()
-	tx2.Hash = "tx2"
-	tx2.References = []string{"tx1"}
+	tx2.Hash = "hash2_410f47fabbdb4cfd4eef5297e008eedd6a118e1cc10f47fabbdb410f47"
+	tx2.References = []string{tx1.Hash}
 	if err := db.SetTransaction(tx2); err != nil {
 		t.Fatal(err)
 	}
 
 	tx3 := createTestTransaction()
-	tx3.Hash = "tx3"
-	tx3.References = []string{"tx2"}
+	tx3.Hash = "hash3_d6a118e1cc10f47fabbdb410f47fabbdb410f47fabbdb4cfd4eef5297e"
+	tx3.References = []string{tx2.Hash}
 	if err := db.SetTransaction(tx3); err != nil {
 		t.Fatal(err)
 	}
 
 	// Check forward references (what each tx references)
-	fwd1, err := db.GetForwardRefs("tx1")
+	fwd1, err := db.GetForwardRefs(tx1.Hash)
 	if err != nil {
 		t.Errorf("unexpected error for tx1 forward refs: %v", err)
 	}
@@ -518,28 +519,28 @@ func TestReferenceQueries(t *testing.T) {
 		t.Errorf("tx1 should have no forward refs, got %v", fwd1)
 	}
 
-	fwd2, err := db.GetForwardRefs("tx2")
+	fwd2, err := db.GetForwardRefs(tx2.Hash)
 	if err != nil {
 		t.Errorf("failed to get tx2 forward refs: %v", err)
 	}
-	if len(fwd2) != 1 || fwd2[0] != "tx1" {
+	if len(fwd2) != 1 || fwd2[0] != tx1.Hash {
 		t.Errorf("tx2 should reference tx1, got %v", fwd2)
 	}
 
 	// Check backward references (what references each tx)
-	back1, err := db.GetBackwardRefs("tx1")
+	back1, err := db.GetBackwardRefs(tx1.Hash)
 	if err != nil {
 		t.Errorf("failed to get tx1 backward refs: %v", err)
 	}
-	if len(back1) != 1 || back1[0] != "tx2" {
+	if len(back1) != 1 || back1[0] != tx2.Hash {
 		t.Errorf("tx1 should be referenced by tx2, got %v", back1)
 	}
 
-	back2, err := db.GetBackwardRefs("tx2")
+	back2, err := db.GetBackwardRefs(tx2.Hash)
 	if err != nil {
 		t.Errorf("failed to get tx2 backward refs: %v", err)
 	}
-	if len(back2) != 1 || back2[0] != "tx3" {
+	if len(back2) != 1 || back2[0] != tx3.Hash {
 		t.Errorf("tx2 should be referenced by tx3, got %v", back2)
 	}
 
@@ -558,7 +559,7 @@ func TestBatchGetTransactions(t *testing.T) {
 	txs := make([]*Transaction, 3)
 	for i := range txs {
 		tx := createTestTransaction()
-		tx.Hash = fmt.Sprintf("tx%d", i)
+		tx.Hash = fmt.Sprintf("hash%d_03d0f902018561802b66b0408b578373d02947e47d4e2a477526856f66", i)
 		tx.Changes[0].Amount = uint64(1000 * (i + 1)) // Different amounts to verify correct retrieval
 		txs[i] = tx
 		if err := db.SetTransaction(tx); err != nil {
@@ -567,12 +568,17 @@ func TestBatchGetTransactions(t *testing.T) {
 	}
 
 	// Test batch retrieval
-	hashes := []string{"tx0", "tx1", "nonexistent", "tx2"}
+	hashes := []string{
+		"hash0_03d0f902018561802b66b0408b578373d02947e47d4e2a477526856f66",
+		"hash1_03d0f902018561802b66b0408b578373d02947e47d4e2a477526856f66",
+		"nonexistent",
+		"hash2_03d0f902018561802b66b0408b578373d02947e47d4e2a477526856f66",
+	}
 	result := db.BatchGetTransactions(hashes)
 
 	// Verify successful retrievals
 	for i := range txs {
-		hash := fmt.Sprintf("tx%d", i)
+		hash := fmt.Sprintf("hash%d_03d0f902018561802b66b0408b578373d02947e47d4e2a477526856f66", i)
 		got, exists := result.Transactions[hash]
 		if !exists {
 			t.Errorf("transaction %s not found in results", hash)
