@@ -30,6 +30,8 @@ package hyyve
 import (
 	"bytes"
 	"encoding/binary"
+	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"io"
 	"math/rand"
@@ -40,6 +42,8 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"golang.org/x/crypto/sha3"
 )
 
 var bufferPool = sync.Pool{
@@ -306,7 +310,12 @@ func (db *DB) processBatch(batch []*Transaction, startOffset int64) error {
 		db.hashIndex[tx.Hash] = offset
 		db.bloom.Add(tx.Hash)
 		db.timeSkipList.Insert(tx.Timestamp, tx.Hash)
-		db.addressIndex[tx.From] = append(db.addressIndex[tx.From], tx.Hash)
+
+		// Update address index with all addresses
+		addresses := extractAddressesFromTransaction(tx)
+		for _, addr := range addresses {
+			db.addressIndex[addr] = append(db.addressIndex[addr], tx.Hash)
+		}
 
 		// Update reference maps
 		for _, refHash := range tx.References {
@@ -353,9 +362,155 @@ func (db *DB) SetTransaction(tx *Transaction) error {
 	return db.setTransactionInternal(tx)
 }
 
-// Update setTransactionInternal to use binary format
-// setTransactionInternal performs the actual transaction storage operation.
-// It handles binary serialization and index updates.
+// Helper function to extract all addresses from a transaction
+func extractAddressesFromTransaction(tx *Transaction) []string {
+	addresses := make(map[string]struct{}) // Use map to deduplicate
+
+	// Add From address
+	addresses[tx.From] = struct{}{}
+
+	// Process each change
+	for _, change := range tx.Changes {
+		// Add To address from change
+		if change.To != "" {
+			addresses[change.To] = struct{}{}
+		}
+
+		// Process instruction data based on type
+		switch change.InstructionType {
+		case InstructionTransfer:
+			var inst TransferInstruction
+			if err := json.Unmarshal(change.InstructionData, &inst); err == nil {
+				for _, recipient := range inst.Recipients {
+					addresses[recipient.Address] = struct{}{}
+				}
+			}
+
+		case InstructionCreateToken:
+			var inst CreateTokenInstruction
+			if err := json.Unmarshal(change.InstructionData, &inst); err == nil {
+				if inst.MintAuthority != "" {
+					addresses[inst.MintAuthority] = struct{}{}
+				}
+				if inst.FreezeAuthority != "" {
+					addresses[inst.FreezeAuthority] = struct{}{}
+				}
+			}
+
+		case InstructionMintSupply:
+			var inst MintSupplyInstruction
+			if err := json.Unmarshal(change.InstructionData, &inst); err == nil {
+				if inst.Recipient != "" {
+					addresses[inst.Recipient] = struct{}{}
+				}
+				if inst.ValidatorAddress != "" {
+					addresses[inst.ValidatorAddress] = struct{}{}
+				}
+			}
+
+		case InstructionCreateNFT:
+			var inst CreateNFTInstruction
+			if err := json.Unmarshal(change.InstructionData, &inst); err == nil {
+				if inst.MintAuthority != "" {
+					addresses[inst.MintAuthority] = struct{}{}
+				}
+				if inst.FreezeAuthority != "" {
+					addresses[inst.FreezeAuthority] = struct{}{}
+				}
+				for _, token := range inst.Tokens {
+					if token.Recipient != "" {
+						addresses[token.Recipient] = struct{}{}
+					}
+				}
+			}
+
+		case InstructionTransferNFT:
+			var inst TransferNFTInstruction
+			if err := json.Unmarshal(change.InstructionData, &inst); err == nil {
+				if inst.RoyaltyAddr != "" {
+					addresses[inst.RoyaltyAddr] = struct{}{}
+				}
+			}
+
+		case InstructionFreezeAccount:
+			var inst FreezeAccountInstruction
+			if err := json.Unmarshal(change.InstructionData, &inst); err == nil {
+				addresses[inst.Account] = struct{}{}
+			}
+
+		case InstructionThawAccount:
+			var inst ThawAccountInstruction
+			if err := json.Unmarshal(change.InstructionData, &inst); err == nil {
+				addresses[inst.Account] = struct{}{}
+			}
+
+		case InstructionCreateLiquidityPool:
+			var inst CreatePoolInstruction
+			if err := json.Unmarshal(change.InstructionData, &inst); err == nil {
+				if inst.TokenA != "" {
+					addresses[inst.TokenA] = struct{}{}
+				}
+				if inst.TokenB != "" {
+					addresses[inst.TokenB] = struct{}{}
+				}
+			}
+
+		case InstructionValidatePool:
+			var inst ValidatePoolInstruction
+			if err := json.Unmarshal(change.InstructionData, &inst); err == nil {
+				if inst.ValidatorAddress != "" {
+					addresses[inst.ValidatorAddress] = struct{}{}
+				}
+			}
+
+		case InstructionRewardClaim:
+			var inst RewardClaimInstruction
+			if err := json.Unmarshal(change.InstructionData, &inst); err == nil {
+				if inst.WinningAddress != "" {
+					addresses[inst.WinningAddress] = struct{}{}
+				}
+				if inst.MinerAddress != "" {
+					addresses[inst.MinerAddress] = struct{}{}
+				}
+			}
+
+		case InstructionRewardPayment:
+			var inst RewardPaymentInstruction
+			if err := json.Unmarshal(change.InstructionData, &inst); err == nil {
+				if inst.Recipient != "" {
+					addresses[inst.Recipient] = struct{}{}
+				}
+				if inst.ValidatorAddress != "" {
+					addresses[inst.ValidatorAddress] = struct{}{}
+				}
+			}
+
+		case InstructionGenesis:
+			var inst GenesisInstruction
+			if err := json.Unmarshal(change.InstructionData, &inst); err == nil {
+				if inst.Recipient != "" {
+					addresses[inst.Recipient] = struct{}{}
+				}
+			}
+
+		case InstructionTokenGrant:
+			var inst TokenGrantInstruction
+			if err := json.Unmarshal(change.InstructionData, &inst); err == nil {
+				if inst.Recipient != "" {
+					addresses[inst.Recipient] = struct{}{}
+				}
+			}
+		}
+	}
+
+	// Convert map keys to slice
+	result := make([]string, 0, len(addresses))
+	for addr := range addresses {
+		result = append(result, addr)
+	}
+	return result
+}
+
 func (db *DB) setTransactionInternal(tx *Transaction) error {
 	// Add to Bloom filter
 	db.bloom.Add(tx.Hash)
@@ -396,7 +551,12 @@ func (db *DB) setTransactionInternal(tx *Transaction) error {
 	// Update indices
 	db.hashIndex[tx.Hash] = offset
 	db.timeSkipList.Insert(tx.Timestamp, tx.Hash)
-	db.addressIndex[tx.From] = append(db.addressIndex[tx.From], tx.Hash)
+
+	// Update address index with all addresses
+	addresses := extractAddressesFromTransaction(tx)
+	for _, addr := range addresses {
+		db.addressIndex[addr] = append(db.addressIndex[addr], tx.Hash)
+	}
 
 	// Add references without taking another lock
 	for _, refHash := range tx.References {
@@ -1265,11 +1425,21 @@ func (db *DB) AutoTuneBatchSize() BatchConfig {
 		runtime.ReadMemStats(&m)
 		startMem := m.HeapAlloc
 
+		txDemoHashes := make([]string, batchSize)
+		for i := range txDemoHashes {
+			sha3Sum256HashBytes := sha3.Sum256([]byte(fmt.Sprintf("tune_%d", i)))
+			txDemoHashes[i] = hex.EncodeToString(sha3Sum256HashBytes[:])
+		}
 		txs := make([]*Transaction, batchSize)
 		for i := range txs {
 			tx := &Transaction{
-				Hash:      fmt.Sprintf("tune_%d", i),
-				Timestamp: time.Now().UnixNano(),
+				Hash:       txDemoHashes[i],
+				Timestamp:  time.Now().UnixNano(),
+				From:       "612a3c8ca6fc24d2a569deb542e0612c20abb4a42298",
+				Signature:  "d6a1183a14bda344fc101243ce4a91e1cc10f47fabbdb410f47fabbdb410f47fabbdb4cfd4eef5297e008eed",
+				Changes:    make([]TransactionChange, 0),
+				References: make([]string, 0),
+				Fee:        500,
 			}
 			txs[i] = tx
 		}
@@ -1290,9 +1460,7 @@ func (db *DB) AutoTuneBatchSize() BatchConfig {
 
 		// Measure read performance
 		hashes := make([]string, batchSize)
-		for i := range hashes {
-			hashes[i] = fmt.Sprintf("tune_%d", i)
-		}
+		copy(hashes, txDemoHashes)
 
 		readStart := time.Now()
 		result := db.BatchGetTransactions(hashes)
@@ -1383,6 +1551,38 @@ func (db *DB) GetTransactionsByTimeRange(start, end int64) ([]*Transaction, erro
 	// Sort by timestamp
 	sort.Slice(txs, func(i, j int) bool {
 		return txs[i].Timestamp < txs[j].Timestamp
+	})
+
+	return txs, nil
+}
+
+// New function to get all transactions for an address
+func (db *DB) GetAllTransactionsForAddress(addr string) ([]*Transaction, error) {
+	db.mu.RLock()
+	defer db.mu.RUnlock()
+
+	if db.isClosed {
+		return nil, ErrDatabaseClosed
+	}
+
+	// Get transaction hashes from index
+	hashes, exists := db.addressIndex[addr]
+	if !exists {
+		return nil, nil // No transactions found
+	}
+
+	// Use batch get for efficiency
+	result := db.BatchGetTransactions(hashes)
+
+	// Convert map to sorted slice (newest first)
+	txs := make([]*Transaction, 0, len(result.Transactions))
+	for _, tx := range result.Transactions {
+		txs = append(txs, tx)
+	}
+
+	// Sort by timestamp (newest first)
+	sort.Slice(txs, func(i, j int) bool {
+		return txs[i].Timestamp > txs[j].Timestamp
 	})
 
 	return txs, nil

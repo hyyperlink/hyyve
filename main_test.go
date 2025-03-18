@@ -14,7 +14,10 @@ import (
 
 	"crypto/ed25519"
 
+	"encoding/hex"
+
 	"github.com/mr-tron/base58"
+	"golang.org/x/crypto/sha3"
 )
 
 // createTestDB creates and returns a DB with cleanup function
@@ -616,6 +619,14 @@ func BenchmarkAll(b *testing.B) {
 	defer cleanup()
 
 	config := db.AutoTuneBatchSize()
+
+	if config.WriteBatchSize == 0 {
+		b.Fatalf("write batch size is 0")
+	}
+	if config.ReadBatchSize == 0 {
+		b.Fatalf("read batch size is 0")
+	}
+
 	b.Logf("\nAuto-tuned Configuration:")
 	b.Logf("=======================")
 	b.Logf("Write Batch Size: %d", config.WriteBatchSize)
@@ -656,8 +667,10 @@ func BenchmarkAll(b *testing.B) {
 			for i := 0; i < b.N; i++ {
 				txs := make([]*Transaction, writeSize)
 				for j := range txs {
+					sha3Sum256HashBytes := sha3.Sum256([]byte(fmt.Sprintf("tune_%d", j)))
+					txHash := hex.EncodeToString(sha3Sum256HashBytes[:])
 					tx := createTestTransaction()
-					tx.Hash = fmt.Sprintf("tune_%d", j)
+					tx.Hash = txHash
 					txs[j] = tx
 				}
 				if err := db.BatchSetTransactions(txs); err != nil {
@@ -681,7 +694,8 @@ func BenchmarkAll(b *testing.B) {
 			for i := 0; i < b.N; i++ {
 				hashes := make([]string, writeSize)
 				for j := range hashes {
-					hashes[j] = fmt.Sprintf("tune_%d", j)
+					sha3Sum256HashBytes := sha3.Sum256([]byte(fmt.Sprintf("tune_%d", j)))
+					hashes[j] = hex.EncodeToString(sha3Sum256HashBytes[:])
 				}
 				result := db.BatchGetTransactions(hashes)
 				if len(result.Transactions) != writeSize {
@@ -723,10 +737,12 @@ func BenchmarkOperations(b *testing.B) {
 		txs := make([]*Transaction, batchSize)
 		var hashes []string
 		for i := range txs {
+			sha3Sum256HashBytes := sha3.Sum256([]byte(fmt.Sprintf("tx%d", i)))
+			txHash := hex.EncodeToString(sha3Sum256HashBytes[:])
 			tx := createTestTransaction()
-			tx.Hash = fmt.Sprintf("tx%d", i)
+			tx.Hash = txHash
 			txs[i] = tx
-			hashes = append(hashes, tx.Hash)
+			hashes = append(hashes, txHash)
 		}
 
 		b.Run(fmt.Sprintf("write_batch_%d", batchSize), func(b *testing.B) {
@@ -790,10 +806,12 @@ func BenchmarkProfile(b *testing.B) {
 	txs := make([]*Transaction, batchSize)
 	var hashes []string
 	for i := range txs {
+		sha3Sum256HashBytes := sha3.Sum256([]byte(fmt.Sprintf("tx%d", i)))
+		txHash := hex.EncodeToString(sha3Sum256HashBytes[:])
 		tx := createTestTransaction()
-		tx.Hash = fmt.Sprintf("tx%d", i)
+		tx.Hash = txHash
 		txs[i] = tx
-		hashes = append(hashes, tx.Hash)
+		hashes = append(hashes, txHash)
 	}
 
 	b.ResetTimer()
