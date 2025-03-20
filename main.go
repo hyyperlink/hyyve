@@ -969,7 +969,8 @@ func (db *DB) GetReferenceChain(hash string) ([]string, error) {
 	var traverse func(string, int) error
 	traverse = func(current string, depth int) error {
 		if depth > MaxReferenceDepth {
-			return ErrMaxDepthExceeded
+			// Just stop traversing at max depth instead of returning an error
+			return nil
 		}
 
 		if _, exists := visited[current]; exists {
