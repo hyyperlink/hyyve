@@ -5,7 +5,7 @@
 //
 // Key features:
 //   - O(1) hash-based transaction lookups
-//   - Efficient reference graph traversal with cycle detection
+//   - Efficient reference graph traversal
 //   - Address-based transaction history with timestamp filtering
 //   - Auto-tuning for optimal batch sizes
 //   - Thread-safe concurrent access
@@ -38,7 +38,6 @@ import (
 	"os"
 	"runtime"
 	"sort"
-	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -893,8 +892,8 @@ func (db *DB) CanArchive(hash string) bool {
 	return true
 }
 
-// Consolidate reference validation into a single function
-func (db *DB) validateReferences(tx *Transaction, tempRefs map[string][]string) error {
+// Implement a simplified reference validation function
+func (db *DB) validateReferences(tx *Transaction) error {
 	seen := make(map[string]struct{})
 	for _, refHash := range tx.References {
 		// Check for duplicate references
@@ -903,62 +902,22 @@ func (db *DB) validateReferences(tx *Transaction, tempRefs map[string][]string) 
 		}
 		seen[refHash] = struct{}{}
 
-		// Check existence (only need hashIndex check, bloom filter is redundant)
+		// Check existence
 		if _, exists := db.hashIndex[refHash]; !exists {
 			return fmt.Errorf("%w: transaction %s not found", ErrInvalidReference, refHash)
 		}
 	}
-
-	// Check for cycles
-	visited := make(map[string]struct{})
-	visiting := make(map[string]struct{})
-
-	var checkCycles func(string, int) error
-	checkCycles = func(hash string, depth int) error {
-		if depth > MaxReferenceDepth {
-			return fmt.Errorf("%w: chain exceeds %d references", ErrInvalidReference, MaxReferenceDepth)
-		}
-
-		if _, beingVisited := visiting[hash]; beingVisited {
-			return fmt.Errorf("%w: cycle detected through %s", ErrInvalidReference, hash)
-		}
-
-		if _, alreadyVisited := visited[hash]; alreadyVisited {
-			return nil
-		}
-
-		visiting[hash] = struct{}{}
-		defer delete(visiting, hash)
-
-		// Check references in both temp and permanent graphs
-		refs := db.forwardRefs[hash]
-		if tempRefs != nil {
-			if tempRefs[hash] != nil {
-				refs = append(refs, tempRefs[hash]...)
-			}
-		}
-
-		for _, ref := range refs {
-			if err := checkCycles(ref, depth+1); err != nil {
-				return fmt.Errorf("%w: path: %s -> %s", err, hash, ref)
-			}
-		}
-
-		visited[hash] = struct{}{}
-		return nil
-	}
-
-	return checkCycles(tx.Hash, 0)
+	return nil
 }
 
-// Update ValidateReferences to use consolidated function
+// Update ValidateReferences to use simplified function
 func (db *DB) ValidateReferences(tx *Transaction) error {
 	db.mu.RLock()
 	defer db.mu.RUnlock()
-	return db.validateReferences(tx, nil)
+	return db.validateReferences(tx)
 }
 
-// Helper to get the full reference chain
+// Modified GetReferenceChain with counter-based depth limiting
 func (db *DB) GetReferenceChain(hash string) ([]string, error) {
 	db.mu.RLock()
 	defer db.mu.RUnlock()
@@ -968,9 +927,9 @@ func (db *DB) GetReferenceChain(hash string) ([]string, error) {
 
 	var traverse func(string, int) error
 	traverse = func(current string, depth int) error {
-		if depth > MaxReferenceDepth {
-			// Just stop traversing at max depth instead of returning an error
-			return nil
+		// Stop at max depth
+		if depth >= MaxReferenceDepth {
+			return nil // Successfully reached max depth, just stop traversing
 		}
 
 		if _, exists := visited[current]; exists {
@@ -985,6 +944,7 @@ func (db *DB) GetReferenceChain(hash string) ([]string, error) {
 			return nil
 		}
 
+		// Process each reference with incremented depth
 		for _, ref := range refs {
 			if err := traverse(ref, depth+1); err != nil {
 				return err
@@ -998,34 +958,6 @@ func (db *DB) GetReferenceChain(hash string) ([]string, error) {
 	}
 
 	return chain, nil
-}
-
-// Update ValidateTransactionBatch to use consolidated function
-func (db *DB) ValidateTransactionBatch(txs []*Transaction) *BatchValidationResult {
-	db.mu.RLock()
-	defer db.mu.RUnlock()
-
-	result := &BatchValidationResult{
-		Valid:   make([]*Transaction, 0, len(txs)),
-		Invalid: make(map[*Transaction]error),
-	}
-
-	// Build temporary reference map
-	tempRefs := make(map[string][]string)
-	for _, tx := range txs {
-		tempRefs[tx.Hash] = tx.References
-	}
-
-	// Validate each transaction
-	for _, tx := range txs {
-		if err := db.validateReferences(tx, tempRefs); err != nil {
-			result.Invalid[tx] = err
-			continue
-		}
-		result.Valid = append(result.Valid, tx)
-	}
-
-	return result
 }
 
 // DependencySort sorts transactions based on their references
@@ -1088,21 +1020,16 @@ func (db *DB) DependencySort(txs []*Transaction) ([]*Transaction, error) {
 	return sorted, nil
 }
 
-// BatchSetTransactions stores multiple transactions in dependency order.
-// It validates all transactions and their references before storage.
+// Update BatchSetTransactions to use modified validation
 func (db *DB) BatchSetTransactions(txs []*Transaction) error {
-	validationResult := db.ValidateTransactionBatch(txs)
-
-	if len(validationResult.Invalid) > 0 {
-		var errMsg strings.Builder
-		errMsg.WriteString("batch validation failed:\n")
-		for tx, err := range validationResult.Invalid {
-			fmt.Fprintf(&errMsg, "- tx %s: %v\n", tx.Hash, err)
+	// Simple validation for the batch (existence and duplicates only)
+	for _, tx := range txs {
+		if err := db.ValidateReferences(tx); err != nil {
+			return fmt.Errorf("validation failed for tx %s: %w", tx.Hash, err)
 		}
-		return fmt.Errorf("%w: %s", ErrBatchValidation, errMsg.String())
 	}
 
-	sorted, err := db.DependencySort(validationResult.Valid)
+	sorted, err := db.DependencySort(txs)
 	if err != nil {
 		return err // Error is already appropriately wrapped
 	}

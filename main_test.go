@@ -7,6 +7,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -915,4 +916,718 @@ func TestSignatureLengths(t *testing.T) {
 		t.Errorf("SignatureSize constant %d is too small, found signature of length %d",
 			SignatureSize, maxLen)
 	}
+}
+
+func TestBloomFilterMightContain(t *testing.T) {
+	t.Run("basic functionality", func(t *testing.T) {
+		// Create a new bloom filter
+		bf := NewBloomFilter()
+
+		// Real transaction hashes from the transaction data provided
+		hashes := []string{
+			"8c3e73b8a8a8996485693057f8d141ac9cf81a01486071e1bbe025d2f0570fa3",
+			"e99ff77fc4dd8563fcb8862d98a36bab05418d4b876186947af7271b4e5b0e9f",
+			"c57ade8fc059ece500e7a01b3a4766187df93ac53edd196b252f8801b75ce067",
+		}
+
+		// Add the items to the filter
+		for _, hash := range hashes {
+			bf.Add(hash)
+		}
+
+		// Test items that were added (should return true)
+		for _, hash := range hashes {
+			if !bf.MightContain(hash) {
+				t.Errorf("MightContain(%q) = false, want true", hash)
+			}
+		}
+
+		// Test items that were not added (should return false)
+		notAddedHashes := []string{
+			"482385ca509ac2a0b4cb0392ca354ba4d00a3a4245c57756e7f07decc43cc641",
+			"67e0b4967d4d557b47576e2875bca440dea438697d38036441314d2ebc0b6fce",
+			"51680c0dbc21b3f9403604cbf5c50ea106258755a91579759cc27f9f96e32f69",
+		}
+
+		// These should not be in the filter, but there's a small chance of false positives
+		falsePositives := 0
+		for _, hash := range notAddedHashes {
+			if bf.MightContain(hash) {
+				falsePositives++
+			}
+		}
+
+		// Given the size of our filter, we expect very few false positives
+		// for just 3 items. Zero is most likely, but we'll allow up to 1.
+		if falsePositives > 1 {
+			t.Errorf("Got %d false positives out of %d items, expected at most 1",
+				falsePositives, len(notAddedHashes))
+		}
+	})
+
+	t.Run("multiple items with similar hashes", func(t *testing.T) {
+		bf := NewBloomFilter()
+
+		// Addresses from the sample transactions
+		addresses := []string{
+			"DEVnPuA9Ub24Taqvp9KUJ87yMEck48djHJnzC57owUpd", // From address
+			"DpFLkLKipu9G1miZJKnN33DF5Mw1sfQm8CdCkL933mwE", // To address
+		}
+
+		// Add addresses to the filter
+		for _, addr := range addresses {
+			bf.Add(addr)
+		}
+
+		// Verify all added addresses return true
+		for _, addr := range addresses {
+			if !bf.MightContain(addr) {
+				t.Errorf("Added address %q not found in bloom filter", addr)
+			}
+		}
+
+		// Check similar but different addresses
+		similarAddresses := []string{
+			"DEVnPuA9Ub24Taqvp9KUJ87yMEck48djHJnzC57owUpc", // Last char changed
+			"DpFLkLKipu9G1miZJKnN33DF5Mw1sfQm8CdCkL933mwF", // Last char changed
+		}
+
+		// These should mostly return false, but some false positives are possible
+		falsePositives := 0
+		for _, addr := range similarAddresses {
+			if bf.MightContain(addr) {
+				falsePositives++
+			}
+		}
+
+		// Allow some false positives, but not too many
+		if falsePositives == len(similarAddresses) {
+			t.Errorf("All similar addresses returned true, suggesting poor hash distribution")
+		}
+	})
+
+	t.Run("empty items", func(t *testing.T) {
+		bf := NewBloomFilter()
+
+		// Empty strings should still be hashable
+		bf.Add("")
+
+		if !bf.MightContain("") {
+			t.Error("Empty string not found after adding")
+		}
+
+		// Adding a non-empty string shouldn't make MightContain return true for other strings
+		bf = NewBloomFilter()
+		bf.Add("8c3e73b8a8a8996485693057f8d141ac9cf81a01486071e1bbe025d2f0570fa3")
+
+		if bf.MightContain("") {
+			t.Error("Empty string should not be found when not added")
+		}
+	})
+
+	t.Run("large number of elements", func(t *testing.T) {
+		bf := NewBloomFilter()
+
+		// Create a large set of realistic transaction hashes
+		var hashes []string
+		for i := 0; i < 1000; i++ {
+			// Generate a hash-like string based on a pattern from the sample
+			hash := fmt.Sprintf("%032x%032x", i, i*2+1)
+			hashes = append(hashes, hash)
+		}
+
+		// Add all hashes to the filter
+		for _, hash := range hashes {
+			bf.Add(hash)
+		}
+
+		// Check that all added hashes are found (no false negatives)
+		for _, hash := range hashes {
+			if !bf.MightContain(hash) {
+				t.Errorf("Added hash %q not found in bloom filter", hash)
+			}
+		}
+
+		// Generate some hashes that weren't added
+		var notAddedHashes []string
+		for i := 1000; i < 1100; i++ {
+			hash := fmt.Sprintf("%032x%032x", i, i*2+1)
+			notAddedHashes = append(notAddedHashes, hash)
+		}
+
+		// Count false positives
+		falsePositives := 0
+		for _, hash := range notAddedHashes {
+			if bf.MightContain(hash) {
+				falsePositives++
+			}
+		}
+
+		// For BloomFilterSize = 1<<24 and BloomHashCount = 8, with 1000 items,
+		// the false positive rate should be extremely low
+		falsePositiveRate := float64(falsePositives) / float64(len(notAddedHashes))
+		if falsePositiveRate > 0.05 { // Allow up to 5% false positives
+			t.Errorf("False positive rate too high: %f", falsePositiveRate)
+		}
+	})
+
+	t.Run("signatures and transactions", func(t *testing.T) {
+		bf := NewBloomFilter()
+
+		// Add some realistic signatures from the sample data
+		signatures := []string{
+			"43ijbQTetb2e6LdzRd6Yfdo1fg3jyAhMWEu44UWw5RcMB459PJPMM68kZ6MsgVkDWmR4KHwoJse3tirzPHr5nW16",
+			"2eCFzDh6a1dsmBf4AFVEmUBxSTagSQtqQoMHiq6Ts2D4idhJM3QLTR49ZmMe9Dy8mmxmZoxnRhRCdxRrZZphTNYX",
+			"4Ho32ymZ8JM8XQ2NBQUNFK175ooLo4bzzJvkimhbgcPNLopDqc9fL11jehZnCL1joEvcVHyN3kSH4e9vSv31iRZ7",
+		}
+
+		// Add transaction hashes
+		txHashes := []string{
+			"8c3e73b8a8a8996485693057f8d141ac9cf81a01486071e1bbe025d2f0570fa3",
+			"e99ff77fc4dd8563fcb8862d98a36bab05418d4b876186947af7271b4e5b0e9f",
+			"c57ade8fc059ece500e7a01b3a4766187df93ac53edd196b252f8801b75ce067",
+		}
+
+		// Add both signatures and transaction hashes
+		for _, sig := range signatures {
+			bf.Add(sig)
+		}
+
+		for _, hash := range txHashes {
+			bf.Add(hash)
+		}
+
+		// Verify all items are found
+		for _, sig := range signatures {
+			if !bf.MightContain(sig) {
+				t.Errorf("Signature %q not found after adding", sig)
+			}
+		}
+
+		for _, hash := range txHashes {
+			if !bf.MightContain(hash) {
+				t.Errorf("Transaction hash %q not found after adding", hash)
+			}
+		}
+
+		// Verify we don't get false positives for similar but different items
+		// Note: there's always a small chance of false positives, so this is probabilistic
+		modifiedHashes := make([]string, len(txHashes))
+		for i, hash := range txHashes {
+			// Change one character in the middle
+			midpoint := len(hash) / 2
+			modified := hash[:midpoint] + "f" + hash[midpoint+1:]
+			modifiedHashes[i] = modified
+		}
+
+		falsePositives := 0
+		for _, hash := range modifiedHashes {
+			if bf.MightContain(hash) {
+				falsePositives++
+			}
+		}
+
+		// The probability of false positives should be low for a small number of items
+		if falsePositives > 1 {
+			t.Logf("Note: Got %d false positives out of %d modified hashes",
+				falsePositives, len(modifiedHashes))
+		}
+	})
+}
+
+func TestSkipListInsertDuplicateTimestamp(t *testing.T) {
+	// Create a new skip list
+	sl := NewSkipList()
+
+	// Use realistic timestamp
+	timestamp := int64(1742443164867545494)
+
+	// Use realistic transaction hashes
+	hash1 := "8c3e73b8a8a8996485693057f8d141ac9cf81a01486071e1bbe025d2f0570fa3"
+	hash2 := "e99ff77fc4dd8563fcb8862d98a36bab05418d4b876186947af7271b4e5b0e9f"
+	hash3 := "c57ade8fc059ece500e7a01b3a4766187df93ac53edd196b252f8801b75ce067"
+
+	// First insertion creates a new node
+	sl.Insert(timestamp, hash1)
+
+	// Find the node for verification
+	current := sl.head
+	for i := 0; i < sl.maxLevel; i++ {
+		for current.forward[i] != nil && current.forward[i].key < timestamp {
+			current = current.forward[i]
+		}
+	}
+
+	// Move to the actual node with our timestamp
+	current = current.forward[0]
+
+	// Verify the first hash was inserted
+	if current == nil || current.key != timestamp {
+		t.Fatalf("Failed to find node with timestamp %d", timestamp)
+	}
+
+	if len(current.value) != 1 || current.value[0] != hash1 {
+		t.Errorf("Expected value [%s], got %v", hash1, current.value)
+	}
+
+	// Insert a second hash with the same timestamp (this tests the red part)
+	sl.Insert(timestamp, hash2)
+
+	// Verify both hashes are in the value slice
+	if len(current.value) != 2 || current.value[0] != hash1 || current.value[1] != hash2 {
+		t.Errorf("Expected values [%s, %s], got %v", hash1, hash2, current.value)
+	}
+
+	// Insert a third hash with the same timestamp
+	sl.Insert(timestamp, hash3)
+
+	// Verify all three hashes are in the value slice
+	if len(current.value) != 3 {
+		t.Errorf("Expected 3 values, got %d", len(current.value))
+	}
+
+	// Check the values are all there (regardless of order)
+	foundHashes := make(map[string]bool)
+	for _, h := range current.value {
+		foundHashes[h] = true
+	}
+
+	if !foundHashes[hash1] || !foundHashes[hash2] || !foundHashes[hash3] {
+		t.Errorf("Not all hashes were found in the node's value slice: %v", current.value)
+	}
+}
+
+func TestOpenErrorCase(t *testing.T) {
+	// Create a test directory that we'll make inaccessible
+	dir, err := os.MkdirTemp("", "hyyve-test-open-*")
+	if err != nil {
+		t.Fatalf("failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(dir)
+
+	// First, let's verify that the normal case works with a valid path
+	validPath := filepath.Join(dir, "valid.hv")
+	db, err := Open(Options{
+		FilePath: validPath,
+	})
+	if err != nil {
+		t.Fatalf("failed to open DB with valid path: %v", err)
+	}
+	db.Close() // Clean up
+
+	// Test case 1: Invalid path (directory that doesn't exist)
+	invalidDirPath := filepath.Join(dir, "nonexistent-dir", "invalid.hv")
+	_, err = Open(Options{
+		FilePath: invalidDirPath,
+	})
+	if err == nil {
+		t.Error("expected error when opening DB with invalid directory path, got nil")
+	}
+
+	// Test case 2: Path without permissions
+	if runtime.GOOS != "windows" { // Skip on Windows as permissions work differently
+		// Create a directory with no write permissions
+		noPermDir := filepath.Join(dir, "noperm")
+		if err := os.Mkdir(noPermDir, 0500); err != nil { // read + execute, but no write
+			t.Fatalf("failed to create no-permission directory: %v", err)
+		}
+
+		noPermPath := filepath.Join(noPermDir, "noperm.hv")
+		_, err = Open(Options{
+			FilePath: noPermPath,
+		})
+		if err == nil {
+			t.Error("expected error when opening DB with no-permission path, got nil")
+		}
+	}
+
+	// Test case 3: Path is actually a directory, not a file
+	dirAsFilePath := dir // Try to use the directory itself as a file
+	_, err = Open(Options{
+		FilePath: dirAsFilePath,
+	})
+	if err == nil {
+		t.Error("expected error when opening DB with directory as file path, got nil")
+	}
+}
+
+func TestOpenLoadIndexError(t *testing.T) {
+	// Create a test directory
+	dir, err := os.MkdirTemp("", "hyyve-test-loadindex-*")
+	if err != nil {
+		t.Fatalf("failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(dir)
+
+	// Create a valid file path
+	dbPath := filepath.Join(dir, "corrupt.hv")
+
+	// First create a file with corrupted data that will cause loadIndex to fail
+	file, err := os.Create(dbPath)
+	if err != nil {
+		t.Fatalf("failed to create test file: %v", err)
+	}
+
+	// Write some invalid data that would cause loadIndex to fail
+	// This simulates a corrupted database file
+	corruptData := []byte{0x01, 0x02, 0x03} // Not enough bytes for a valid header
+	if _, err := file.Write(corruptData); err != nil {
+		file.Close()
+		t.Fatalf("failed to write corrupt data: %v", err)
+	}
+	file.Close()
+
+	// Now try to open the database with the corrupted file
+	// This should cause loadIndex to fail, triggering the error path we want to test
+	_, err = Open(Options{
+		FilePath: dbPath,
+	})
+
+	// We expect an error
+	if err == nil {
+		t.Error("expected error when opening DB with corrupted file, got nil")
+	}
+
+	// Verify the file was closed by checking if we can open it again
+	file, err = os.OpenFile(dbPath, os.O_RDWR, 0666)
+	if err != nil {
+		t.Errorf("failed to reopen test file, suggesting it wasn't properly closed: %v", err)
+	} else {
+		file.Close()
+	}
+}
+
+func TestLoadIndexSeekToStartError(t *testing.T) {
+	// Create temp directory
+	dir, err := os.MkdirTemp("", "hyyve-test-loadindex-seek-*")
+	if err != nil {
+		t.Fatalf("failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(dir)
+
+	// Create a real DB first
+	dbPath := filepath.Join(dir, "test.hv")
+	db, err := Open(Options{
+		FilePath: dbPath,
+	})
+	if err != nil {
+		t.Fatalf("failed to open test db: %v", err)
+	}
+
+	// Make a copy of the original file for restoration
+	originalFile := db.file
+
+	// Clean up properly at the end
+	defer func() {
+		// Restore original file before closing
+		db.file = originalFile
+		db.Close()
+	}()
+
+	// Create a closed file that will fail on Seek operations
+	closedFile, err := os.CreateTemp(dir, "closed-*.tmp")
+	if err != nil {
+		t.Fatalf("failed to create temp file: %v", err)
+	}
+	closedFile.Close() // Close it to cause errors on operations
+
+	// Replace the DB's file with our closed file
+	db.file = closedFile
+
+	// Now call loadIndex() - it should fail at the Seek(0, 0) operation
+	err = db.loadIndex()
+
+	// Verify we got the expected error
+	if err == nil {
+		t.Error("expected error from loadIndex with closed file, got nil")
+	} else if !strings.Contains(err.Error(), "seek to start") {
+		t.Errorf("expected error to contain 'seek to start', got: %v", err)
+	}
+}
+
+func TestAddReference(t *testing.T) {
+	t.Run("success case", func(t *testing.T) {
+		db, cleanup := createTestDB(t)
+		defer cleanup()
+
+		// Create two transactions with realistic data
+		tx1 := &Transaction{
+			Timestamp: 1742443164867545494,
+			Hash:      "8c3e73b8a8a8996485693057f8d141ac9cf81a01486071e1bbe025d2f0570fa3",
+			From:      "DEVnPuA9Ub24Taqvp9KUJ87yMEck48djHJnzC57owUpd",
+			Signature: "43ijbQTetb2e6LdzRd6Yfdo1fg3jyAhMWEu44UWw5RcMB459PJPMM68kZ6MsgVkDWmR4KHwoJse3tirzPHr5nW16",
+			Changes: []TransactionChange{{
+				To:              "DpFLkLKipu9G1miZJKnN33DF5Mw1sfQm8CdCkL933mwE",
+				Amount:          46653458980,
+				InstructionType: "Transfer",
+				InstructionData: json.RawMessage(`{"recipients":[{"address":"DpFLkLKipu9G1miZJKnN33DF5Mw1sfQm8CdCkL933mwE","amount":46653458980}]}`),
+			}},
+			References: []string{},
+			Fee:        10920,
+		}
+
+		tx2 := &Transaction{
+			Timestamp: 1742443165854655038,
+			Hash:      "e99ff77fc4dd8563fcb8862d98a36bab05418d4b876186947af7271b4e5b0e9f",
+			From:      "DEVnPuA9Ub24Taqvp9KUJ87yMEck48djHJnzC57owUpd",
+			Signature: "2eCFzDh6a1dsmBf4AFVEmUBxSTagSQtqQoMHiq6Ts2D4idhJM3QLTR49ZmMe9Dy8mmxmZoxnRhRCdxRrZZphTNYX",
+			Changes: []TransactionChange{{
+				To:              "DpFLkLKipu9G1miZJKnN33DF5Mw1sfQm8CdCkL933mwE",
+				Amount:          3569938312,
+				InstructionType: "Transfer",
+				InstructionData: json.RawMessage(`{"recipients":[{"address":"DpFLkLKipu9G1miZJKnN33DF5Mw1sfQm8CdCkL933mwE","amount":3569938312}]}`),
+			}},
+			References: []string{},
+			Fee:        8700,
+		}
+
+		// Store both transactions
+		if err := db.SetTransaction(tx1); err != nil {
+			t.Fatalf("failed to store tx1: %v", err)
+		}
+		if err := db.SetTransaction(tx2); err != nil {
+			t.Fatalf("failed to store tx2: %v", err)
+		}
+
+		// Add reference from tx1 to tx2
+		err := db.AddReference(tx1.Hash, tx2.Hash)
+		if err != nil {
+			t.Errorf("AddReference failed: %v", err)
+		}
+
+		// Verify forward reference was added
+		forwards, err := db.GetForwardRefs(tx1.Hash)
+		if err != nil {
+			t.Errorf("GetForwardRefs failed: %v", err)
+		}
+		if len(forwards) != 1 || forwards[0] != tx2.Hash {
+			t.Errorf("Expected forward ref from tx1 to tx2, got %v", forwards)
+		}
+
+		// Verify backward reference was added
+		backwards, err := db.GetBackwardRefs(tx2.Hash)
+		if err != nil {
+			t.Errorf("GetBackwardRefs failed: %v", err)
+		}
+		if len(backwards) != 1 || backwards[0] != tx1.Hash {
+			t.Errorf("Expected backward ref from tx2 to tx1, got %v", backwards)
+		}
+	})
+
+	t.Run("multiple references", func(t *testing.T) {
+		db, cleanup := createTestDB(t)
+		defer cleanup()
+
+		// Create three transactions with realistic data
+		tx1 := &Transaction{
+			Timestamp: 1742443164867545494,
+			Hash:      "8c3e73b8a8a8996485693057f8d141ac9cf81a01486071e1bbe025d2f0570fa3",
+			From:      "DEVnPuA9Ub24Taqvp9KUJ87yMEck48djHJnzC57owUpd",
+			Signature: "43ijbQTetb2e6LdzRd6Yfdo1fg3jyAhMWEu44UWw5RcMB459PJPMM68kZ6MsgVkDWmR4KHwoJse3tirzPHr5nW16",
+			Changes: []TransactionChange{{
+				To:              "DpFLkLKipu9G1miZJKnN33DF5Mw1sfQm8CdCkL933mwE",
+				Amount:          46653458980,
+				InstructionType: "Transfer",
+				InstructionData: json.RawMessage(`{"recipients":[{"address":"DpFLkLKipu9G1miZJKnN33DF5Mw1sfQm8CdCkL933mwE","amount":46653458980}]}`),
+			}},
+			Fee: 10920,
+		}
+
+		tx2 := &Transaction{
+			Timestamp: 1742443165854655038,
+			Hash:      "e99ff77fc4dd8563fcb8862d98a36bab05418d4b876186947af7271b4e5b0e9f",
+			From:      "DEVnPuA9Ub24Taqvp9KUJ87yMEck48djHJnzC57owUpd",
+			Signature: "2eCFzDh6a1dsmBf4AFVEmUBxSTagSQtqQoMHiq6Ts2D4idhJM3QLTR49ZmMe9Dy8mmxmZoxnRhRCdxRrZZphTNYX",
+			Changes: []TransactionChange{{
+				To:              "DpFLkLKipu9G1miZJKnN33DF5Mw1sfQm8CdCkL933mwE",
+				Amount:          3569938312,
+				InstructionType: "Transfer",
+				InstructionData: json.RawMessage(`{"recipients":[{"address":"DpFLkLKipu9G1miZJKnN33DF5Mw1sfQm8CdCkL933mwE","amount":3569938312}]}`),
+			}},
+			Fee: 8700,
+		}
+
+		tx3 := &Transaction{
+			Timestamp: 1742443166875594385,
+			Hash:      "c57ade8fc059ece500e7a01b3a4766187df93ac53edd196b252f8801b75ce067",
+			From:      "DEVnPuA9Ub24Taqvp9KUJ87yMEck48djHJnzC57owUpd",
+			Signature: "4Ho32ymZ8JM8XQ2NBQUNFK175ooLo4bzzJvkimhbgcPNLopDqc9fL11jehZnCL1joEvcVHyN3kSH4e9vSv31iRZ7",
+			Changes: []TransactionChange{{
+				To:              "DpFLkLKipu9G1miZJKnN33DF5Mw1sfQm8CdCkL933mwE",
+				Amount:          14786680653,
+				InstructionType: "Transfer",
+				InstructionData: json.RawMessage(`{"recipients":[{"address":"DpFLkLKipu9G1miZJKnN33DF5Mw1sfQm8CdCkL933mwE","amount":14786680653}]}`),
+			}},
+			Fee: 10880,
+		}
+
+		// Store all transactions
+		for _, tx := range []*Transaction{tx1, tx2, tx3} {
+			if err := db.SetTransaction(tx); err != nil {
+				t.Fatalf("failed to store %s: %v", tx.Hash, err)
+			}
+		}
+
+		// Add multiple references
+		if err := db.AddReference(tx1.Hash, tx2.Hash); err != nil {
+			t.Errorf("AddReference tx1->tx2 failed: %v", err)
+		}
+		if err := db.AddReference(tx1.Hash, tx3.Hash); err != nil {
+			t.Errorf("AddReference tx1->tx3 failed: %v", err)
+		}
+		if err := db.AddReference(tx2.Hash, tx3.Hash); err != nil {
+			t.Errorf("AddReference tx2->tx3 failed: %v", err)
+		}
+
+		// Check forward references from tx1
+		forwards, err := db.GetForwardRefs(tx1.Hash)
+		if err != nil {
+			t.Errorf("GetForwardRefs failed: %v", err)
+		}
+		if len(forwards) != 2 {
+			t.Errorf("Expected 2 forward refs from tx1, got %d", len(forwards))
+		}
+
+		// Check backward references to tx3
+		backwards, err := db.GetBackwardRefs(tx3.Hash)
+		if err != nil {
+			t.Errorf("GetBackwardRefs failed: %v", err)
+		}
+		if len(backwards) != 2 {
+			t.Errorf("Expected 2 backward refs to tx3, got %d", len(backwards))
+		}
+
+		// Verify reference counts
+		db.mu.RLock()
+		refCount := db.refCounts[tx3.Hash].Load()
+		db.mu.RUnlock()
+		if refCount != 2 {
+			t.Errorf("Expected refCount of 2 for tx3, got %d", refCount)
+		}
+	})
+
+	t.Run("non-existent source transaction", func(t *testing.T) {
+		db, cleanup := createTestDB(t)
+		defer cleanup()
+
+		// Create only the destination transaction
+		tx2 := &Transaction{
+			Timestamp: 1742443165854655038,
+			Hash:      "e99ff77fc4dd8563fcb8862d98a36bab05418d4b876186947af7271b4e5b0e9f",
+			From:      "DEVnPuA9Ub24Taqvp9KUJ87yMEck48djHJnzC57owUpd",
+			Signature: "2eCFzDh6a1dsmBf4AFVEmUBxSTagSQtqQoMHiq6Ts2D4idhJM3QLTR49ZmMe9Dy8mmxmZoxnRhRCdxRrZZphTNYX",
+			Changes: []TransactionChange{{
+				To:              "DpFLkLKipu9G1miZJKnN33DF5Mw1sfQm8CdCkL933mwE",
+				Amount:          3569938312,
+				InstructionType: "Transfer",
+				InstructionData: json.RawMessage(`{"recipients":[{"address":"DpFLkLKipu9G1miZJKnN33DF5Mw1sfQm8CdCkL933mwE","amount":3569938312}]}`),
+			}},
+			Fee: 8700,
+		}
+
+		if err := db.SetTransaction(tx2); err != nil {
+			t.Fatalf("failed to store tx2: %v", err)
+		}
+
+		// Try to add reference from non-existent transaction
+		err := db.AddReference("482385ca509ac2a0b4cb0392ca354ba4d00a3a4245c57756e7f07decc43cc641", tx2.Hash)
+		if !errors.Is(err, ErrKeyNotFound) {
+			t.Errorf("Expected ErrKeyNotFound, got %v", err)
+		}
+	})
+
+	t.Run("non-existent destination transaction", func(t *testing.T) {
+		db, cleanup := createTestDB(t)
+		defer cleanup()
+
+		// Create only the source transaction
+		tx1 := &Transaction{
+			Timestamp: 1742443164867545494,
+			Hash:      "8c3e73b8a8a8996485693057f8d141ac9cf81a01486071e1bbe025d2f0570fa3",
+			From:      "DEVnPuA9Ub24Taqvp9KUJ87yMEck48djHJnzC57owUpd",
+			Signature: "43ijbQTetb2e6LdzRd6Yfdo1fg3jyAhMWEu44UWw5RcMB459PJPMM68kZ6MsgVkDWmR4KHwoJse3tirzPHr5nW16",
+			Changes: []TransactionChange{{
+				To:              "DpFLkLKipu9G1miZJKnN33DF5Mw1sfQm8CdCkL933mwE",
+				Amount:          46653458980,
+				InstructionType: "Transfer",
+				InstructionData: json.RawMessage(`{"recipients":[{"address":"DpFLkLKipu9G1miZJKnN33DF5Mw1sfQm8CdCkL933mwE","amount":46653458980}]}`),
+			}},
+			Fee: 10920,
+		}
+
+		if err := db.SetTransaction(tx1); err != nil {
+			t.Fatalf("failed to store tx1: %v", err)
+		}
+
+		// Try to add reference to non-existent transaction
+		err := db.AddReference(tx1.Hash, "67e0b4967d4d557b47576e2875bca440dea438697d38036441314d2ebc0b6fce")
+		if !errors.Is(err, ErrKeyNotFound) {
+			t.Errorf("Expected ErrKeyNotFound, got %v", err)
+		}
+	})
+
+	t.Run("reference count initialization", func(t *testing.T) {
+		db, cleanup := createTestDB(t)
+		defer cleanup()
+
+		// Create two transactions with realistic data
+		tx1 := &Transaction{
+			Timestamp: 1742443164867545494,
+			Hash:      "8c3e73b8a8a8996485693057f8d141ac9cf81a01486071e1bbe025d2f0570fa3",
+			From:      "DEVnPuA9Ub24Taqvp9KUJ87yMEck48djHJnzC57owUpd",
+			Signature: "43ijbQTetb2e6LdzRd6Yfdo1fg3jyAhMWEu44UWw5RcMB459PJPMM68kZ6MsgVkDWmR4KHwoJse3tirzPHr5nW16",
+			Changes: []TransactionChange{{
+				To:              "DpFLkLKipu9G1miZJKnN33DF5Mw1sfQm8CdCkL933mwE",
+				Amount:          46653458980,
+				InstructionType: "Transfer",
+				InstructionData: json.RawMessage(`{"recipients":[{"address":"DpFLkLKipu9G1miZJKnN33DF5Mw1sfQm8CdCkL933mwE","amount":46653458980}]}`),
+			}},
+			Fee: 10920,
+		}
+
+		tx2 := &Transaction{
+			Timestamp: 1742443165854655038,
+			Hash:      "e99ff77fc4dd8563fcb8862d98a36bab05418d4b876186947af7271b4e5b0e9f",
+			From:      "DEVnPuA9Ub24Taqvp9KUJ87yMEck48djHJnzC57owUpd",
+			Signature: "2eCFzDh6a1dsmBf4AFVEmUBxSTagSQtqQoMHiq6Ts2D4idhJM3QLTR49ZmMe9Dy8mmxmZoxnRhRCdxRrZZphTNYX",
+			Changes: []TransactionChange{{
+				To:              "DpFLkLKipu9G1miZJKnN33DF5Mw1sfQm8CdCkL933mwE",
+				Amount:          3569938312,
+				InstructionType: "Transfer",
+				InstructionData: json.RawMessage(`{"recipients":[{"address":"DpFLkLKipu9G1miZJKnN33DF5Mw1sfQm8CdCkL933mwE","amount":3569938312}]}`),
+			}},
+			Fee: 8700,
+		}
+
+		// Store both transactions
+		if err := db.SetTransaction(tx1); err != nil {
+			t.Fatalf("failed to store tx1: %v", err)
+		}
+		if err := db.SetTransaction(tx2); err != nil {
+			t.Fatalf("failed to store tx2: %v", err)
+		}
+
+		// Verify refCounts is nil before adding reference
+		db.mu.RLock()
+		_, exists := db.refCounts[tx2.Hash]
+		db.mu.RUnlock()
+		if exists {
+			t.Error("Expected refCounts to be nil before adding reference")
+		}
+
+		// Add reference
+		if err := db.AddReference(tx1.Hash, tx2.Hash); err != nil {
+			t.Errorf("AddReference failed: %v", err)
+		}
+
+		// Verify refCount was initialized and incremented
+		db.mu.RLock()
+		refCount, exists := db.refCounts[tx2.Hash]
+		db.mu.RUnlock()
+		if !exists {
+			t.Error("Expected refCounts to be initialized after adding reference")
+		} else if refCount.Load() != 1 {
+			t.Errorf("Expected refCount of 1, got %d", refCount.Load())
+		}
+	})
 }

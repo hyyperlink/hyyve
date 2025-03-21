@@ -6,8 +6,8 @@ HyyveKV is a specialized storage engine designed for high-throughput transaction
 
 ## Features
 
-- Fast hash-based transaction lookups
-- Efficient reference graph traversal with cycle detection
+- O(1) hash-based transaction lookups
+- Efficient reference graph traversal 
 - DAG-based transaction organization with multi-reference support
 - Address-based transaction history with timestamp filtering
 - Fixed-size record format for core transaction data
@@ -123,14 +123,14 @@ Each transaction contains:
   - InstructionType: Operation type
   - InstructionData: JSON-encoded instruction data
 - References: Optional links to other transactions
-- Signature: 64-byte signature
+- Signature: Cryptographic signature (88 bytes)
 - Fee: Transaction fee (uint64)
 - Timestamp: Unix nano timestamp
 
 ### Configuration
 ```go
 const (
-    MaxReferenceDepth = 100     // Maximum depth of reference chain
+    MaxReferenceDepth = 4       // Maximum depth of reference chain traversal
     BloomFilterSize   = 1<<24   // 16MB Bloom filter
     MaxSkipListLevel  = 32      // Skip list height for timestamp indexing
     SkipListP         = 0.5      // Skip list level probability
@@ -145,10 +145,10 @@ HyyveKV uses a hybrid storage format optimized for both random access and sequen
    - Reference count (2 bytes)
    - Change count (2 bytes)
    - Fee (2 bytes)
-2. Fixed-size core fields (128 bytes)
+2. Fixed-size core fields (196 bytes)
    - Hash (64 bytes)
    - From address (44 bytes)
-   - Signature (64 bytes)
+   - Signature (88 bytes)
 3. Variable-length data using binary encoding
    - Changes array
    - References array
@@ -265,17 +265,17 @@ type BatchConfig struct {
 }
 ```
 
-The auto-tuner prioritizes read performance while staying within memory constraints, typically setting read batch sizes to 1/4 of write batch sizes for better throughput.
+The auto-tuner prioritizes read performance while staying within memory constraints, typically setting read batch sizes to 1/4 of write batch sizes for optimal throughput.
 
 ### Batch Processing Internals
 The batch processing system includes:
 - Topological sorting for dependency ordering
-- Parallel validation where possible
+- Basic reference validation for each transaction
 - Optimized disk I/O patterns
 - Transaction dependency resolution
 
 ```go
-// Example of dependency sorting
+// Example of dependency sorting within a batch
 sorted, err := db.DependencySort(batch)
 if err != nil {
     return fmt.Errorf("dependency sort failed: %w", err)
@@ -326,8 +326,7 @@ All indices are automatically rebuilt on database open and kept consistent durin
 ### Reference Management
 The reference system provides robust transaction graph management with:
 - Atomic reference counting
-- Cycle detection in transaction graphs
-- Maximum depth enforcement
+- Reference existence validation
 - Bidirectional reference tracking
 
 Example usage:
@@ -380,10 +379,7 @@ if err := db.SetTransaction(tx2); err != nil {
     log.Fatal("Failed to store tx2:", err)
 }
 if err := db.SetTransaction(tx3); err != nil {
-    // Will fail if:
-    // - tx2 doesn't exist
-    // - Would create a cycle
-    // - Would exceed max depth
+    // Will fail if tx2 doesn't exist
     log.Fatal("Failed to store tx3:", err)
 }
 
@@ -478,8 +474,6 @@ defer db.Close()
 All transactions are validated before storage:
 - Hash uniqueness
 - Reference existence and validity
-- Circular reference detection
-- Reference chain depth limits
 - Field size constraints
 - Duplicate reference detection
 
@@ -506,6 +500,9 @@ refs, err := db.GetForwardRefs(hash)
 
 // Get all referencing transactions
 backRefs, err := db.GetBackwardRefs(hash)
+
+// Get reference chain (limited to MaxReferenceDepth)
+chain, err := db.GetReferenceChain(hash)
 
 // Check reference count
 if db.CanArchive(hash) {
@@ -569,6 +566,10 @@ go tool pprof cpu.prof
 # View trace in browser
 go tool trace trace.out
 ```
+
+## Storage vs. Validation
+
+HyyveKV focuses on being a high-performance storage engine rather than enforcing complex validation rules. Basic validation (like reference existence and duplicate detection) is performed, but application-level validation like cycle detection across the entire graph should be handled by the application using this library.
 
 ## License
 

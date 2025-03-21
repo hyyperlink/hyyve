@@ -60,7 +60,7 @@ const (
 	BloomHashCount = 8
 
 	// MaxReferenceDepth is the maximum allowed depth of transaction reference chains
-	MaxReferenceDepth = 100
+	MaxReferenceDepth = 4
 )
 
 // Transaction represents a single transaction in the database.
