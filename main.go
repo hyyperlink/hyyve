@@ -296,10 +296,15 @@ func (db *DB) loadIndex() error {
 // processBatch handles a batch of transactions during index loading.
 // It sorts transactions by dependencies and updates all indices.
 func (db *DB) processBatch(batch []*Transaction, startOffset int64) error {
-	// Sort transactions by dependencies
+	// Try to sort transactions by dependencies
 	sorted, err := db.DependencySort(batch)
 	if err != nil {
-		return err
+		// If dependency sort fails, fall back to timestamp sorting
+		sorted = make([]*Transaction, len(batch))
+		copy(sorted, batch)
+		sort.Slice(sorted, func(i, j int) bool {
+			return sorted[i].Timestamp < sorted[j].Timestamp
+		})
 	}
 
 	// Process sorted transactions
@@ -318,9 +323,8 @@ func (db *DB) processBatch(batch []*Transaction, startOffset int64) error {
 
 		// Update reference maps
 		for _, refHash := range tx.References {
-			if err := db.AddReference(tx.Hash, refHash); err != nil {
-				return err
-			}
+			// Don't fail on reference errors during loading
+			_ = db.AddReference(tx.Hash, refHash)
 		}
 
 		offset += MinRecordSize + int64(binary.Size(tx.Changes)+binary.Size(tx.References))
@@ -1014,6 +1018,7 @@ func (db *DB) DependencySort(txs []*Transaction) ([]*Transaction, error) {
 
 	// Check for cycles
 	if len(sorted) != len(txs) {
+		// Return error for consistent error handling
 		return nil, fmt.Errorf("%w: not all transactions could be sorted", ErrDependencyCycle)
 	}
 
@@ -1031,7 +1036,12 @@ func (db *DB) BatchSetTransactions(txs []*Transaction) error {
 
 	sorted, err := db.DependencySort(txs)
 	if err != nil {
-		return err // Error is already appropriately wrapped
+		// If dependency sort fails, fall back to timestamp sorting
+		sorted = make([]*Transaction, len(txs))
+		copy(sorted, txs)
+		sort.Slice(sorted, func(i, j int) bool {
+			return sorted[i].Timestamp < sorted[j].Timestamp
+		})
 	}
 
 	db.mu.Lock()
@@ -1046,9 +1056,9 @@ func (db *DB) BatchSetTransactions(txs []*Transaction) error {
 	return nil
 }
 
-// GetAddressTransactions retrieves transactions associated with an address.
+// GetAddressTransactionsSinceTimestamp retrieves transactions associated with an address.
 // Returns transactions newer than 'after' timestamp, limited to 'limit' results.
-func (db *DB) GetAddressTransactions(addr string, after int64, limit int) ([]*Transaction, error) {
+func (db *DB) GetAddressTransactionsSinceTimestamp(addr string, after int64, limit int) ([]*Transaction, error) {
 	db.mu.RLock()
 	defer db.mu.RUnlock()
 
@@ -1511,6 +1521,50 @@ func (db *DB) GetAllTransactionsForAddress(addr string) ([]*Transaction, error) 
 	// Sort by timestamp (newest first)
 	sort.Slice(txs, func(i, j int) bool {
 		return txs[i].Timestamp > txs[j].Timestamp
+	})
+
+	return txs, nil
+}
+
+// GetAllTransactions returns all transactions in the database ordered by timestamp (oldest first).
+// It uses the timeSkipList for efficient timestamp-based retrieval.
+func (db *DB) GetAllTransactions() ([]*Transaction, error) {
+	db.mu.RLock()
+	defer db.mu.RUnlock()
+
+	if db.isClosed {
+		return nil, ErrDatabaseClosed
+	}
+
+	// Start from the head of the skip list and collect all transaction hashes
+	var hashes []string
+	current := db.timeSkipList.head.forward[0] // Start from first real node
+
+	// Traverse the bottom level of the skip list to get all transactions in order
+	for current != nil {
+		hashes = append(hashes, current.value...)
+		current = current.forward[0]
+	}
+
+	if len(hashes) == 0 {
+		return nil, nil // No transactions in database
+	}
+
+	// Use batch get for efficient retrieval
+	result := db.BatchGetTransactions(hashes)
+	if len(result.Errors) > 0 {
+		return nil, fmt.Errorf("failed to retrieve some transactions")
+	}
+
+	// Convert map to sorted slice
+	txs := make([]*Transaction, 0, len(result.Transactions))
+	for _, tx := range result.Transactions {
+		txs = append(txs, tx)
+	}
+
+	// Sort by timestamp (oldest first)
+	sort.Slice(txs, func(i, j int) bool {
+		return txs[i].Timestamp < txs[j].Timestamp
 	})
 
 	return txs, nil

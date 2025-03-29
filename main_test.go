@@ -399,7 +399,7 @@ func TestAddressHistoryOrder(t *testing.T) {
 	}
 
 	// Get history
-	history, err := db.GetAddressTransactions(addr, 0, 10)
+	history, err := db.GetAddressTransactionsSinceTimestamp(addr, 0, 10)
 	if err != nil {
 		t.Fatal(err)
 	}
