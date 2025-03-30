@@ -1569,3 +1569,13 @@ func (db *DB) GetAllTransactions() ([]*Transaction, error) {
 
 	return txs, nil
 }
+
+// GetGraphWeight returns the weight of the graph.
+// It uses the timeSkipList for efficient timestamp-based retrieval.
+func (db *DB) GetGraphWeight() (int64, error) {
+	alltxs, err := db.GetAllTransactions()
+	if err != nil {
+		return 0, err
+	}
+	return int64(len(alltxs)), nil
+}
