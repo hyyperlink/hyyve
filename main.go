@@ -211,7 +211,7 @@ func (db *DB) loadIndex() error {
 	}
 
 	const batchSize = 1000
-	var batch []*Transaction
+	var batch []*TX
 	var batchStartOffset int64 // Track where this batch started
 
 	for {
@@ -266,8 +266,8 @@ func (db *DB) loadIndex() error {
 		}
 
 		// Create transaction
-		tx := fixedRecordToTransaction(record)
-		tx.Changes = varDataVar.Changes
+		tx := fixedRecordToTX(record)
+		tx.Instructions = varDataVar.Instructions
 		tx.References = varDataVar.References
 
 		// Add to batch
@@ -295,12 +295,12 @@ func (db *DB) loadIndex() error {
 // Helper function to process a batch of transactions
 // processBatch handles a batch of transactions during index loading.
 // It sorts transactions by dependencies and updates all indices.
-func (db *DB) processBatch(batch []*Transaction, startOffset int64) error {
+func (db *DB) processBatch(batch []*TX, startOffset int64) error {
 	// Try to sort transactions by dependencies
 	sorted, err := db.DependencySort(batch)
 	if err != nil {
 		// If dependency sort fails, fall back to timestamp sorting
-		sorted = make([]*Transaction, len(batch))
+		sorted = make([]*TX, len(batch))
 		copy(sorted, batch)
 		sort.Slice(sorted, func(i, j int) bool {
 			return sorted[i].Timestamp < sorted[j].Timestamp
@@ -316,7 +316,7 @@ func (db *DB) processBatch(batch []*Transaction, startOffset int64) error {
 		db.timeSkipList.Insert(tx.Timestamp, tx.Hash)
 
 		// Update address index with all addresses
-		addresses := extractAddressesFromTransaction(tx)
+		addresses := extractAddressesFromTX(tx)
 		for _, addr := range addresses {
 			db.addressIndex[addr] = append(db.addressIndex[addr], tx.Hash)
 		}
@@ -327,7 +327,7 @@ func (db *DB) processBatch(batch []*Transaction, startOffset int64) error {
 			_ = db.AddReference(tx.Hash, refHash)
 		}
 
-		offset += MinRecordSize + int64(binary.Size(tx.Changes)+binary.Size(tx.References))
+		offset += MinRecordSize + int64(binary.Size(tx.Instructions)+binary.Size(tx.References))
 	}
 
 	return nil
@@ -349,7 +349,7 @@ func (db *DB) Close() error {
 
 // SetTransaction stores a single transaction in the database.
 // It validates the transaction and its references before storage.
-func (db *DB) SetTransaction(tx *Transaction) error {
+func (db *DB) SetTransaction(tx *TX) error {
 	// Validate before taking the write lock
 	if err := db.ValidateReferences(tx); err != nil {
 		return err
@@ -362,28 +362,33 @@ func (db *DB) SetTransaction(tx *Transaction) error {
 		return ErrDatabaseClosed
 	}
 
+	// Check for duplicate hash
+	if _, exists := db.hashIndex[tx.Hash]; exists {
+		return fmt.Errorf("%w: transaction %s already exists", ErrDuplicateTransaction, tx.Hash)
+	}
+
 	return db.setTransactionInternal(tx)
 }
 
-// Helper function to extract all addresses from a transaction
-func extractAddressesFromTransaction(tx *Transaction) []string {
+// Helper function to extract all addresses from a TX
+func extractAddressesFromTX(tx *TX) []string {
 	addresses := make(map[string]struct{}) // Use map to deduplicate
 
-	// Add From address
-	addresses[tx.From] = struct{}{}
-
-	// Process each change
-	for _, change := range tx.Changes {
-		// Add To address from change
-		if change.To != "" {
-			addresses[change.To] = struct{}{}
+	// Process each instruction
+	for _, ix := range tx.Instructions {
+		// Add From and To addresses from instruction
+		if ix.From != "" {
+			addresses[ix.From] = struct{}{}
+		}
+		if ix.To != "" {
+			addresses[ix.To] = struct{}{}
 		}
 
 		// Process instruction data based on type
-		switch change.InstructionType {
+		switch ix.InstructionType {
 		case InstructionTransfer:
 			var inst TransferInstruction
-			if err := json.Unmarshal(change.InstructionData, &inst); err == nil {
+			if err := json.Unmarshal(ix.InstructionData, &inst); err == nil {
 				for _, recipient := range inst.Recipients {
 					addresses[recipient.Address] = struct{}{}
 				}
@@ -391,7 +396,7 @@ func extractAddressesFromTransaction(tx *Transaction) []string {
 
 		case InstructionCreateToken:
 			var inst CreateTokenInstruction
-			if err := json.Unmarshal(change.InstructionData, &inst); err == nil {
+			if err := json.Unmarshal(ix.InstructionData, &inst); err == nil {
 				if inst.MintAuthority != "" {
 					addresses[inst.MintAuthority] = struct{}{}
 				}
@@ -402,7 +407,7 @@ func extractAddressesFromTransaction(tx *Transaction) []string {
 
 		case InstructionMintSupply:
 			var inst MintSupplyInstruction
-			if err := json.Unmarshal(change.InstructionData, &inst); err == nil {
+			if err := json.Unmarshal(ix.InstructionData, &inst); err == nil {
 				if inst.Recipient != "" {
 					addresses[inst.Recipient] = struct{}{}
 				}
@@ -413,7 +418,7 @@ func extractAddressesFromTransaction(tx *Transaction) []string {
 
 		case InstructionCreateNFT:
 			var inst CreateNFTInstruction
-			if err := json.Unmarshal(change.InstructionData, &inst); err == nil {
+			if err := json.Unmarshal(ix.InstructionData, &inst); err == nil {
 				if inst.MintAuthority != "" {
 					addresses[inst.MintAuthority] = struct{}{}
 				}
@@ -429,7 +434,7 @@ func extractAddressesFromTransaction(tx *Transaction) []string {
 
 		case InstructionTransferNFT:
 			var inst TransferNFTInstruction
-			if err := json.Unmarshal(change.InstructionData, &inst); err == nil {
+			if err := json.Unmarshal(ix.InstructionData, &inst); err == nil {
 				if inst.RoyaltyAddr != "" {
 					addresses[inst.RoyaltyAddr] = struct{}{}
 				}
@@ -437,19 +442,19 @@ func extractAddressesFromTransaction(tx *Transaction) []string {
 
 		case InstructionFreezeAccount:
 			var inst FreezeAccountInstruction
-			if err := json.Unmarshal(change.InstructionData, &inst); err == nil {
+			if err := json.Unmarshal(ix.InstructionData, &inst); err == nil {
 				addresses[inst.Account] = struct{}{}
 			}
 
 		case InstructionThawAccount:
 			var inst ThawAccountInstruction
-			if err := json.Unmarshal(change.InstructionData, &inst); err == nil {
+			if err := json.Unmarshal(ix.InstructionData, &inst); err == nil {
 				addresses[inst.Account] = struct{}{}
 			}
 
 		case InstructionCreateLiquidityPool:
 			var inst CreatePoolInstruction
-			if err := json.Unmarshal(change.InstructionData, &inst); err == nil {
+			if err := json.Unmarshal(ix.InstructionData, &inst); err == nil {
 				if inst.TokenA != "" {
 					addresses[inst.TokenA] = struct{}{}
 				}
@@ -460,7 +465,7 @@ func extractAddressesFromTransaction(tx *Transaction) []string {
 
 		case InstructionValidatePool:
 			var inst ValidatePoolInstruction
-			if err := json.Unmarshal(change.InstructionData, &inst); err == nil {
+			if err := json.Unmarshal(ix.InstructionData, &inst); err == nil {
 				if inst.ValidatorAddress != "" {
 					addresses[inst.ValidatorAddress] = struct{}{}
 				}
@@ -468,7 +473,7 @@ func extractAddressesFromTransaction(tx *Transaction) []string {
 
 		case InstructionRewardClaim:
 			var inst RewardClaimInstruction
-			if err := json.Unmarshal(change.InstructionData, &inst); err == nil {
+			if err := json.Unmarshal(ix.InstructionData, &inst); err == nil {
 				if inst.WinningAddress != "" {
 					addresses[inst.WinningAddress] = struct{}{}
 				}
@@ -479,7 +484,7 @@ func extractAddressesFromTransaction(tx *Transaction) []string {
 
 		case InstructionRewardPayment:
 			var inst RewardPaymentInstruction
-			if err := json.Unmarshal(change.InstructionData, &inst); err == nil {
+			if err := json.Unmarshal(ix.InstructionData, &inst); err == nil {
 				if inst.Recipient != "" {
 					addresses[inst.Recipient] = struct{}{}
 				}
@@ -490,7 +495,7 @@ func extractAddressesFromTransaction(tx *Transaction) []string {
 
 		case InstructionGenesis:
 			var inst GenesisInstruction
-			if err := json.Unmarshal(change.InstructionData, &inst); err == nil {
+			if err := json.Unmarshal(ix.InstructionData, &inst); err == nil {
 				if inst.Recipient != "" {
 					addresses[inst.Recipient] = struct{}{}
 				}
@@ -498,7 +503,7 @@ func extractAddressesFromTransaction(tx *Transaction) []string {
 
 		case InstructionTokenGrant:
 			var inst TokenGrantInstruction
-			if err := json.Unmarshal(change.InstructionData, &inst); err == nil {
+			if err := json.Unmarshal(ix.InstructionData, &inst); err == nil {
 				if inst.Recipient != "" {
 					addresses[inst.Recipient] = struct{}{}
 				}
@@ -514,12 +519,12 @@ func extractAddressesFromTransaction(tx *Transaction) []string {
 	return result
 }
 
-func (db *DB) setTransactionInternal(tx *Transaction) error {
+func (db *DB) setTransactionInternal(tx *TX) error {
 	// Add to Bloom filter
 	db.bloom.Add(tx.Hash)
 
 	// Convert to fixed record
-	record, err := transactionToFixedRecord(tx)
+	record, err := txToFixedRecord(tx)
 	if err != nil {
 		return fmt.Errorf("fixed record conversion: %w", err)
 	}
@@ -532,8 +537,8 @@ func (db *DB) setTransactionInternal(tx *Transaction) error {
 
 	// Prepare and write variable length data
 	varData := &variableData{
-		Changes:    tx.Changes,
-		References: tx.References,
+		Instructions: tx.Instructions,
+		References:   tx.References,
 	}
 
 	// Use binary marshaling
@@ -556,7 +561,7 @@ func (db *DB) setTransactionInternal(tx *Transaction) error {
 	db.timeSkipList.Insert(tx.Timestamp, tx.Hash)
 
 	// Update address index with all addresses
-	addresses := extractAddressesFromTransaction(tx)
+	addresses := extractAddressesFromTX(tx)
 	for _, addr := range addresses {
 		db.addressIndex[addr] = append(db.addressIndex[addr], tx.Hash)
 	}
@@ -588,7 +593,7 @@ func (db *DB) setTransactionInternal(tx *Transaction) error {
 // Update readTransactionFromOffset to use binary format
 // readTransactionFromOffset reads and deserializes a transaction from disk.
 // It uses buffer pooling to minimize allocations during reads.
-func (db *DB) readTransactionFromOffset(offset int64) (*Transaction, error) {
+func (db *DB) readTransactionFromOffset(offset int64) (*TX, error) {
 	db.filePos.Lock()
 	defer db.filePos.Unlock()
 
@@ -618,7 +623,7 @@ func (db *DB) readTransactionFromOffset(offset int64) (*Transaction, error) {
 	}
 
 	// Convert fixed record to transaction
-	tx := fixedRecordToTransaction(record)
+	tx := fixedRecordToTX(record)
 
 	// Read variable length data size
 	var varDataSize uint32
@@ -649,7 +654,7 @@ func (db *DB) readTransactionFromOffset(offset int64) (*Transaction, error) {
 	}
 
 	// Add variable data to transaction
-	tx.Changes = varDataVar.Changes
+	tx.Instructions = varDataVar.Instructions
 	tx.References = varDataVar.References
 
 	return tx, nil
@@ -657,7 +662,7 @@ func (db *DB) readTransactionFromOffset(offset int64) (*Transaction, error) {
 
 // GetTransaction retrieves a transaction by its hash.
 // Returns ErrKeyNotFound if the transaction doesn't exist.
-func (db *DB) GetTransaction(hash string) (*Transaction, error) {
+func (db *DB) GetTransaction(hash string) (*TX, error) {
 	db.mu.RLock()
 	defer db.mu.RUnlock()
 
@@ -679,8 +684,8 @@ func (h *RecordHeader) MarshalBinary() ([]byte, error) {
 	buf := make([]byte, HeaderSize)
 	binary.BigEndian.PutUint64(buf[0:8], uint64(h.Timestamp))
 	binary.BigEndian.PutUint16(buf[8:10], h.RefCount)
-	binary.BigEndian.PutUint16(buf[10:12], h.ChangeCount)
-	binary.BigEndian.PutUint16(buf[12:14], h.Fee)
+	binary.BigEndian.PutUint16(buf[10:12], h.InstructionCount)
+	binary.BigEndian.PutUint16(buf[12:14], h.TotalFee)
 	return buf, nil
 }
 
@@ -692,30 +697,40 @@ func (h *RecordHeader) UnmarshalBinary(data []byte) error {
 	}
 	h.Timestamp = int64(binary.BigEndian.Uint64(data[0:8]))
 	h.RefCount = binary.BigEndian.Uint16(data[8:10])
-	h.ChangeCount = binary.BigEndian.Uint16(data[10:12])
-	h.Fee = binary.BigEndian.Uint16(data[12:14])
+	h.InstructionCount = binary.BigEndian.Uint16(data[10:12])
+	h.TotalFee = binary.BigEndian.Uint16(data[12:14])
+
+	// Set legacy fields for backward compatibility
+	h.ChangeCount = h.InstructionCount
+	h.Fee = h.TotalFee
 
 	// Add validation
 	if h.Timestamp < 0 {
 		return fmt.Errorf("%w: invalid timestamp %d", ErrCorruptedData, h.Timestamp)
 	}
-	if h.RefCount > 1000 || h.ChangeCount > 1000 { // reasonable limits
-		return fmt.Errorf("%w: invalid counts ref=%d change=%d", ErrCorruptedData, h.RefCount, h.ChangeCount)
+	if h.RefCount > 1000 || h.InstructionCount > 1000 { // reasonable limits
+		return fmt.Errorf("%w: invalid counts ref=%d instruction=%d", ErrCorruptedData, h.RefCount, h.InstructionCount)
 	}
 
 	return nil
 }
 
-// transactionToFixedRecord converts a transaction into a fixed-size record format.
+// txToFixedRecord converts a TX into a fixed-size record format.
 // It handles padding and size validation of fields.
-func transactionToFixedRecord(tx *Transaction) (*FixedRecord, error) {
+func txToFixedRecord(tx *TX) (*FixedRecord, error) {
 	record := &FixedRecord{}
+
+	// Calculate total fee from all instructions
+	var totalFee uint64
+	for _, ix := range tx.Instructions {
+		totalFee += ix.Fee
+	}
 
 	// Set header fields
 	record.Header.Timestamp = tx.Timestamp
-	record.Header.Fee = uint16(tx.Fee)
+	record.Header.TotalFee = uint16(totalFee)
 	record.Header.RefCount = uint16(len(tx.References))
-	record.Header.ChangeCount = uint16(len(tx.Changes))
+	record.Header.InstructionCount = uint16(len(tx.Instructions))
 
 	// Copy hash (must be exactly 64 chars)
 	if len(tx.Hash) != HashSize {
@@ -723,35 +738,18 @@ func transactionToFixedRecord(tx *Transaction) (*FixedRecord, error) {
 	}
 	copy(record.Core.Hash[:], tx.Hash)
 
-	// Copy from address (must be 43 or 44 chars)
-	if len(tx.From) < 43 || len(tx.From) > 44 {
-		return nil, fmt.Errorf("invalid address length: got %d, want 43-44", len(tx.From))
-	}
-	copy(record.Core.From[:], tx.From)
-
-	// Copy signature (must be 87 or 88 chars)
-	if len(tx.Signature) < 87 || len(tx.Signature) > 88 {
-		return nil, fmt.Errorf("invalid signature length: got %d (want 87-88) for sig: %s",
-			len(tx.Signature), tx.Signature)
-	}
-
-	copy(record.Core.Signature[:], tx.Signature)
-
 	return record, nil
 }
 
-// fixedRecordToTransaction converts a fixed-size record back into a transaction.
+// fixedRecordToTX converts a fixed-size record back into a TX.
 // It handles trimming of padded fields.
-func fixedRecordToTransaction(record *FixedRecord) *Transaction {
-	tx := &Transaction{
+func fixedRecordToTX(record *FixedRecord) *TX {
+	tx := &TX{
 		Timestamp: record.Header.Timestamp,
-		Fee:       uint64(record.Header.Fee),
 	}
 
 	// Trim any zero padding from fixed fields
 	tx.Hash = string(bytes.TrimRight(record.Core.Hash[:], "\x00"))
-	tx.From = string(bytes.TrimRight(record.Core.From[:], "\x00"))
-	tx.Signature = string(bytes.TrimRight(record.Core.Signature[:], "\x00"))
 
 	return tx
 }
@@ -897,7 +895,7 @@ func (db *DB) CanArchive(hash string) bool {
 }
 
 // Implement a simplified reference validation function
-func (db *DB) validateReferences(tx *Transaction) error {
+func (db *DB) validateReferences(tx *TX) error {
 	seen := make(map[string]struct{})
 	for _, refHash := range tx.References {
 		// Check for duplicate references
@@ -915,7 +913,7 @@ func (db *DB) validateReferences(tx *Transaction) error {
 }
 
 // Update ValidateReferences to use simplified function
-func (db *DB) ValidateReferences(tx *Transaction) error {
+func (db *DB) ValidateReferences(tx *TX) error {
 	db.mu.RLock()
 	defer db.mu.RUnlock()
 	return db.validateReferences(tx)
@@ -965,11 +963,11 @@ func (db *DB) GetReferenceChain(hash string) ([]string, error) {
 }
 
 // DependencySort sorts transactions based on their references
-func (db *DB) DependencySort(txs []*Transaction) ([]*Transaction, error) {
+func (db *DB) DependencySort(txs []*TX) ([]*TX, error) {
 	// Build adjacency graph
-	graph := make(map[string][]string)     // hash -> dependent hashes
-	inDegree := make(map[string]int)       // hash -> number of dependencies
-	txMap := make(map[string]*Transaction) // hash -> transaction
+	graph := make(map[string][]string) // hash -> dependent hashes
+	inDegree := make(map[string]int)   // hash -> number of dependencies
+	txMap := make(map[string]*TX)      // hash -> transaction
 
 	// Initialize maps
 	for _, tx := range txs {
@@ -998,7 +996,7 @@ func (db *DB) DependencySort(txs []*Transaction) ([]*Transaction, error) {
 	}
 
 	// Process queue
-	var sorted []*Transaction
+	var sorted []*TX
 	for len(queue) > 0 {
 		// Pop from queue
 		current := queue[0]
@@ -1026,7 +1024,7 @@ func (db *DB) DependencySort(txs []*Transaction) ([]*Transaction, error) {
 }
 
 // Update BatchSetTransactions to use modified validation
-func (db *DB) BatchSetTransactions(txs []*Transaction) error {
+func (db *DB) BatchSetTransactions(txs []*TX) error {
 	// Simple validation for the batch (existence and duplicates only)
 	for _, tx := range txs {
 		if err := db.ValidateReferences(tx); err != nil {
@@ -1037,7 +1035,7 @@ func (db *DB) BatchSetTransactions(txs []*Transaction) error {
 	sorted, err := db.DependencySort(txs)
 	if err != nil {
 		// If dependency sort fails, fall back to timestamp sorting
-		sorted = make([]*Transaction, len(txs))
+		sorted = make([]*TX, len(txs))
 		copy(sorted, txs)
 		sort.Slice(sorted, func(i, j int) bool {
 			return sorted[i].Timestamp < sorted[j].Timestamp
@@ -1058,7 +1056,7 @@ func (db *DB) BatchSetTransactions(txs []*Transaction) error {
 
 // GetAddressTransactionsSinceTimestamp retrieves transactions associated with an address.
 // Returns transactions newer than 'after' timestamp, limited to 'limit' results.
-func (db *DB) GetAddressTransactionsSinceTimestamp(addr string, after int64, limit int) ([]*Transaction, error) {
+func (db *DB) GetAddressTransactionsSinceTimestamp(addr string, after int64, limit int) ([]*TX, error) {
 	db.mu.RLock()
 	defer db.mu.RUnlock()
 
@@ -1071,7 +1069,7 @@ func (db *DB) GetAddressTransactionsSinceTimestamp(addr string, after int64, lim
 		return nil, nil
 	}
 
-	var txs []*Transaction
+	var txs []*TX
 	for _, hash := range hashes {
 		tx, err := db.GetTransaction(hash)
 		if err != nil {
@@ -1103,7 +1101,7 @@ func (db *DB) BatchGetTransactions(hashes []string) *BatchGetResult {
 
 	// Pre-allocate slices with capacity
 	result := &BatchGetResult{
-		Transactions: make(map[string]*Transaction, len(hashes)),
+		Transactions: make(map[string]*TX, len(hashes)),
 		Errors:       make(map[string]error, len(hashes)),
 	}
 
@@ -1137,54 +1135,100 @@ func (db *DB) BatchGetTransactions(hashes []string) *BatchGetResult {
 	return result
 }
 
-// MarshalBinary serializes a transaction change into a binary format.
+// MarshalBinary serializes an IX into a binary format.
 // The format includes length-prefixed variable-size fields.
-func (tc *TransactionChange) MarshalBinary() ([]byte, error) {
+func (ix *IX) MarshalBinary() ([]byte, error) {
 	// Calculate total size needed
-	size := 8 + // Amount (uint64)
-		4 + len(tc.To) + // To length + string
-		4 + len(tc.InstructionType) + // Type length + string
-		4 + len(tc.InstructionData) // Data length + bytes
+	size := 8 + // Hash length + string
+		4 + len(ix.Hash) +
+		4 + len(ix.From) + // From length + string
+		4 + len(ix.To) + // To length + string
+		8 + // Amount (uint64)
+		8 + // Fee (uint64)
+		4 + len(ix.InstructionType) + // Type length + string
+		4 + len(ix.InstructionData) + // Data length + bytes
+		4 + len(ix.Signature) // Signature length + string
 
 	buf := make([]byte, size)
 	offset := 0
 
-	// Write Amount
-	binary.BigEndian.PutUint64(buf[offset:], tc.Amount)
-	offset += 8
+	// Write Hash
+	binary.BigEndian.PutUint32(buf[offset:], uint32(len(ix.Hash)))
+	offset += 4
+	copy(buf[offset:], ix.Hash)
+	offset += len(ix.Hash)
+
+	// Write From
+	binary.BigEndian.PutUint32(buf[offset:], uint32(len(ix.From)))
+	offset += 4
+	copy(buf[offset:], ix.From)
+	offset += len(ix.From)
 
 	// Write To
-	binary.BigEndian.PutUint32(buf[offset:], uint32(len(tc.To)))
+	binary.BigEndian.PutUint32(buf[offset:], uint32(len(ix.To)))
 	offset += 4
-	copy(buf[offset:], tc.To)
-	offset += len(tc.To)
+	copy(buf[offset:], ix.To)
+	offset += len(ix.To)
+
+	// Write Amount
+	binary.BigEndian.PutUint64(buf[offset:], ix.Amount)
+	offset += 8
+
+	// Write Fee
+	binary.BigEndian.PutUint64(buf[offset:], ix.Fee)
+	offset += 8
 
 	// Write InstructionType
-	binary.BigEndian.PutUint32(buf[offset:], uint32(len(tc.InstructionType)))
+	binary.BigEndian.PutUint32(buf[offset:], uint32(len(ix.InstructionType)))
 	offset += 4
-	copy(buf[offset:], tc.InstructionType)
-	offset += len(tc.InstructionType)
+	copy(buf[offset:], ix.InstructionType)
+	offset += len(ix.InstructionType)
 
 	// Write InstructionData
-	binary.BigEndian.PutUint32(buf[offset:], uint32(len(tc.InstructionData)))
+	binary.BigEndian.PutUint32(buf[offset:], uint32(len(ix.InstructionData)))
 	offset += 4
-	copy(buf[offset:], tc.InstructionData)
+	copy(buf[offset:], ix.InstructionData)
+	offset += len(ix.InstructionData)
+
+	// Write Signature
+	binary.BigEndian.PutUint32(buf[offset:], uint32(len(ix.Signature)))
+	offset += 4
+	copy(buf[offset:], ix.Signature)
 
 	return buf, nil
 }
 
-// UnmarshalBinary deserializes a binary format into a transaction change.
+// UnmarshalBinary deserializes a binary format into an IX.
 // It includes validation of the data format and field sizes.
-func (tc *TransactionChange) UnmarshalBinary(data []byte) error {
-	if len(data) < 8 {
+func (ix *IX) UnmarshalBinary(data []byte) error {
+	if len(data) < 4 {
 		return ErrCorruptedData
 	}
 
 	offset := 0
 
-	// Read Amount
-	tc.Amount = binary.BigEndian.Uint64(data[offset:])
-	offset += 8
+	// Read Hash
+	hashLen := binary.BigEndian.Uint32(data[offset:])
+	offset += 4
+
+	if len(data) < offset+int(hashLen) {
+		return ErrCorruptedData
+	}
+	ix.Hash = string(data[offset : offset+int(hashLen)])
+	offset += int(hashLen)
+
+	// Read From
+	if len(data) < offset+4 {
+		return ErrCorruptedData
+	}
+	fromLen := binary.BigEndian.Uint32(data[offset:])
+	offset += 4
+
+	if len(data) < offset+int(fromLen) {
+		return ErrCorruptedData
+	}
+	ix.From = string(data[offset : offset+int(fromLen)])
+	offset += int(fromLen)
 
 	// Read To
 	if len(data) < offset+4 {
@@ -1196,8 +1240,22 @@ func (tc *TransactionChange) UnmarshalBinary(data []byte) error {
 	if len(data) < offset+int(toLen) {
 		return ErrCorruptedData
 	}
-	tc.To = string(data[offset : offset+int(toLen)])
+	ix.To = string(data[offset : offset+int(toLen)])
 	offset += int(toLen)
+
+	// Read Amount
+	if len(data) < offset+8 {
+		return ErrCorruptedData
+	}
+	ix.Amount = binary.BigEndian.Uint64(data[offset:])
+	offset += 8
+
+	// Read Fee
+	if len(data) < offset+8 {
+		return ErrCorruptedData
+	}
+	ix.Fee = binary.BigEndian.Uint64(data[offset:])
+	offset += 8
 
 	// Read InstructionType
 	if len(data) < offset+4 {
@@ -1209,7 +1267,7 @@ func (tc *TransactionChange) UnmarshalBinary(data []byte) error {
 	if len(data) < offset+int(typeLen) {
 		return ErrCorruptedData
 	}
-	tc.InstructionType = string(data[offset : offset+int(typeLen)])
+	ix.InstructionType = string(data[offset : offset+int(typeLen)])
 	offset += int(typeLen)
 
 	// Read InstructionData
@@ -1222,27 +1280,40 @@ func (tc *TransactionChange) UnmarshalBinary(data []byte) error {
 	if len(data) < offset+int(dataLen) {
 		return ErrCorruptedData
 	}
-	tc.InstructionData = make([]byte, dataLen)
-	copy(tc.InstructionData, data[offset:offset+int(dataLen)])
+	ix.InstructionData = make([]byte, dataLen)
+	copy(ix.InstructionData, data[offset:offset+int(dataLen)])
+	offset += int(dataLen)
+
+	// Read Signature
+	if len(data) < offset+4 {
+		return ErrCorruptedData
+	}
+	sigLen := binary.BigEndian.Uint32(data[offset:])
+	offset += 4
+
+	if len(data) < offset+int(sigLen) {
+		return ErrCorruptedData
+	}
+	ix.Signature = string(data[offset : offset+int(sigLen)])
 
 	return nil
 }
 
 // Add binary marshaling for variable data struct
 type variableData struct {
-	Changes    []TransactionChange
-	References []string
+	Instructions []IX
+	References   []string
 }
 
 func (vd *variableData) MarshalBinary() ([]byte, error) {
 	// Calculate size
-	size := 4 // Number of changes
-	for _, change := range vd.Changes {
-		changeBytes, err := change.MarshalBinary()
+	size := 4 // Number of instructions
+	for _, ix := range vd.Instructions {
+		ixBytes, err := ix.MarshalBinary()
 		if err != nil {
 			return nil, err
 		}
-		size += 4 + len(changeBytes) // Length + data
+		size += 4 + len(ixBytes) // Length + data
 	}
 
 	size += 4 // Number of references
@@ -1254,15 +1325,15 @@ func (vd *variableData) MarshalBinary() ([]byte, error) {
 	buf := make([]byte, size)
 	offset := 0
 
-	// Write changes
-	binary.BigEndian.PutUint32(buf[offset:], uint32(len(vd.Changes)))
+	// Write instructions
+	binary.BigEndian.PutUint32(buf[offset:], uint32(len(vd.Instructions)))
 	offset += 4
-	for _, change := range vd.Changes {
-		changeBytes, _ := change.MarshalBinary()
-		binary.BigEndian.PutUint32(buf[offset:], uint32(len(changeBytes)))
+	for _, ix := range vd.Instructions {
+		ixBytes, _ := ix.MarshalBinary()
+		binary.BigEndian.PutUint32(buf[offset:], uint32(len(ixBytes)))
 		offset += 4
-		copy(buf[offset:], changeBytes)
-		offset += len(changeBytes)
+		copy(buf[offset:], ixBytes)
+		offset += len(ixBytes)
 	}
 
 	// Write references
@@ -1285,25 +1356,25 @@ func (vd *variableData) UnmarshalBinary(data []byte) error {
 
 	offset := 0
 
-	// Read changes
-	changeCount := binary.BigEndian.Uint32(data[offset:])
+	// Read instructions
+	ixCount := binary.BigEndian.Uint32(data[offset:])
 	offset += 4
 
-	vd.Changes = make([]TransactionChange, changeCount)
-	for i := range vd.Changes {
+	vd.Instructions = make([]IX, ixCount)
+	for i := range vd.Instructions {
 		if len(data) < offset+4 {
 			return ErrCorruptedData
 		}
-		changeLen := binary.BigEndian.Uint32(data[offset:])
+		ixLen := binary.BigEndian.Uint32(data[offset:])
 		offset += 4
 
-		if len(data) < offset+int(changeLen) {
+		if len(data) < offset+int(ixLen) {
 			return ErrCorruptedData
 		}
-		if err := vd.Changes[i].UnmarshalBinary(data[offset : offset+int(changeLen)]); err != nil {
+		if err := vd.Instructions[i].UnmarshalBinary(data[offset : offset+int(ixLen)]); err != nil {
 			return err
 		}
-		offset += int(changeLen)
+		offset += int(ixLen)
 	}
 
 	// Read references
@@ -1368,16 +1439,13 @@ func (db *DB) AutoTuneBatchSize() BatchConfig {
 			sha3Sum256HashBytes := sha3.Sum256([]byte(fmt.Sprintf("tune_%d", i)))
 			txDemoHashes[i] = hex.EncodeToString(sha3Sum256HashBytes[:])
 		}
-		txs := make([]*Transaction, batchSize)
+		txs := make([]*TX, batchSize)
 		for i := range txs {
-			tx := &Transaction{
-				Hash:       txDemoHashes[i],
-				Timestamp:  time.Now().UnixNano(),
-				From:       "612a3c8ca6fc24d2a569deb542e0612c20abb4a42298",
-				Signature:  "d6a1183a14bda344fc101243ce4a91e1cc10f47fabbdb410f47fabbdb410f47fabbdb4cfd4eef5297e008eed",
-				Changes:    make([]TransactionChange, 0),
-				References: make([]string, 0),
-				Fee:        500,
+			tx := &TX{
+				Hash:         txDemoHashes[i],
+				Timestamp:    time.Now().UnixNano(),
+				Instructions: make([]IX, 0),
+				References:   make([]string, 0),
 			}
 			txs[i] = tx
 		}
@@ -1438,7 +1506,7 @@ func (db *DB) AutoTuneBatchSize() BatchConfig {
 // GetTransactionsByTimeRange returns all transactions with timestamps between start and end (inclusive).
 // It leverages the skip list structure for efficient O(log n + k) retrieval, where n is the total number
 // of unique timestamps and k is the number of transactions in the range.
-func (db *DB) GetTransactionsByTimeRange(start, end int64) ([]*Transaction, error) {
+func (db *DB) GetTransactionsByTimeRange(start, end int64) ([]*TX, error) {
 	db.mu.RLock()
 	defer db.mu.RUnlock()
 
@@ -1481,7 +1549,7 @@ func (db *DB) GetTransactionsByTimeRange(start, end int64) ([]*Transaction, erro
 	}
 
 	// Convert map to sorted slice
-	txs := make([]*Transaction, 0, len(result.Transactions))
+	txs := make([]*TX, 0, len(result.Transactions))
 	for _, tx := range result.Transactions {
 		txs = append(txs, tx)
 	}
@@ -1495,7 +1563,7 @@ func (db *DB) GetTransactionsByTimeRange(start, end int64) ([]*Transaction, erro
 }
 
 // New function to get all transactions for an address
-func (db *DB) GetAllTransactionsForAddress(addr string) ([]*Transaction, error) {
+func (db *DB) GetAllTransactionsForAddress(addr string) ([]*TX, error) {
 	db.mu.RLock()
 	defer db.mu.RUnlock()
 
@@ -1513,7 +1581,7 @@ func (db *DB) GetAllTransactionsForAddress(addr string) ([]*Transaction, error) 
 	result := db.BatchGetTransactions(hashes)
 
 	// Convert map to sorted slice (newest first)
-	txs := make([]*Transaction, 0, len(result.Transactions))
+	txs := make([]*TX, 0, len(result.Transactions))
 	for _, tx := range result.Transactions {
 		txs = append(txs, tx)
 	}
@@ -1528,7 +1596,7 @@ func (db *DB) GetAllTransactionsForAddress(addr string) ([]*Transaction, error) 
 
 // GetAllTransactions returns all transactions in the database ordered by timestamp (oldest first).
 // It uses the timeSkipList for efficient timestamp-based retrieval.
-func (db *DB) GetAllTransactions() ([]*Transaction, error) {
+func (db *DB) GetAllTransactions() ([]*TX, error) {
 	db.mu.RLock()
 	defer db.mu.RUnlock()
 
@@ -1557,7 +1625,7 @@ func (db *DB) GetAllTransactions() ([]*Transaction, error) {
 	}
 
 	// Convert map to sorted slice
-	txs := make([]*Transaction, 0, len(result.Transactions))
+	txs := make([]*TX, 0, len(result.Transactions))
 	for _, tx := range result.Transactions {
 		txs = append(txs, tx)
 	}

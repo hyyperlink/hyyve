@@ -27,6 +27,8 @@ var (
 	ErrBatchValidation = errors.New("batch validation failed")
 	// ErrDependencyCycle is returned when transactions in a batch have circular dependencies
 	ErrDependencyCycle = errors.New("dependency cycle detected")
+	// ErrDuplicateTransaction is returned when attempting to store a transaction with a hash that already exists
+	ErrDuplicateTransaction = errors.New("duplicate transaction")
 )
 
 const (
@@ -63,26 +65,27 @@ const (
 	MaxReferenceDepth = 4
 )
 
-// Transaction represents a single transaction in the database.
-// Each transaction can reference multiple previous transactions,
+// TX represents the primary transaction format used by the Hyyve database.
+// Each transaction can contain multiple instructions and reference previous transactions,
 // forming a directed acyclic graph.
-type Transaction struct {
-	Timestamp  int64
-	Hash       string
-	From       string
-	Signature  string
-	Changes    []TransactionChange
-	References []string
-	Fee        uint64
+type TX struct {
+	Timestamp    int64    `json:"timestamp" msgpack:"timestamp" db:"timestamp"`
+	Hash         string   `json:"hash" msgpack:"hash" db:"hash"`
+	Instructions []IX     `json:"instructions" msgpack:"instructions" db:"-"`
+	References   []string `json:"references" msgpack:"references" db:"-"`
 }
 
-// TransactionChange represents a single change operation within a transaction.
-// It includes the recipient address, amount, and optional instruction data.
-type TransactionChange struct {
-	To              string
-	Amount          uint64
-	InstructionType string
-	InstructionData []byte
+// IX represents an individual instruction within a TX.
+// Each instruction has its own signature and can represent different types of operations.
+type IX struct {
+	Hash            string `json:"hash" msgpack:"hash" db:"hash"`
+	From            string `json:"from" msgpack:"from" db:"from_address"`
+	To              string `json:"to" msgpack:"to" db:"to_address"`
+	Amount          uint64 `json:"amount" msgpack:"amount" db:"amount"`
+	Fee             uint64 `json:"fee" msgpack:"fee" db:"fee"`
+	InstructionType string `json:"instruction_type" msgpack:"instruction_type"`
+	InstructionData []byte `json:"instruction_data" msgpack:"instruction_data"`
+	Signature       string `json:"signature" msgpack:"signature"`
 }
 
 // DB represents a HyyveKV database instance.
@@ -94,7 +97,7 @@ type DB struct {
 	filepath     string
 	isClosed     bool
 	hashIndex    map[string]int64    // hash -> file offset
-	addressIndex map[string][]string // address -> []hash (changed from []CompositeKey)
+	addressIndex map[string][]string // address -> []hash
 	forwardRefs  map[string][]string // hash -> []referenced_hash
 	backwardRefs map[string][]string // hash -> []referencing_hash
 	refCounts    map[string]*atomic.Uint32
@@ -111,18 +114,19 @@ type Options struct {
 // RecordHeader represents the fixed-size header portion of a transaction record.
 // It contains metadata about the transaction's size and structure.
 type RecordHeader struct {
-	Timestamp   int64
-	RefCount    uint16
-	ChangeCount uint16
-	Fee         uint16
+	Timestamp        int64
+	RefCount         uint16
+	InstructionCount uint16
+	TotalFee         uint16
+	// Legacy fields for backward compatibility
+	ChangeCount uint16 // Alias for InstructionCount
+	Fee         uint16 // Alias for TotalFee
 }
 
 // RecordCore contains the fixed-size core fields of a transaction.
 // These fields have predefined sizes and are stored in a binary format.
 type RecordCore struct {
-	Hash      [HashSize]byte
-	From      [AddressSize]byte
-	Signature [SignatureSize]byte
+	Hash [HashSize]byte
 }
 
 // FixedRecord combines the header and core fields of a transaction record.
@@ -135,15 +139,15 @@ type FixedRecord struct {
 // BatchGetResult holds the results of a batch transaction retrieval operation.
 // It maps transaction hashes to either successfully retrieved transactions or errors.
 type BatchGetResult struct {
-	Transactions map[string]*Transaction
+	Transactions map[string]*TX
 	Errors       map[string]error
 }
 
 // BatchValidationResult contains the results of batch transaction validation.
 // It separates valid transactions from invalid ones and includes error details.
 type BatchValidationResult struct {
-	Valid   []*Transaction
-	Invalid map[*Transaction]error
+	Valid   []*TX
+	Invalid map[*TX]error
 }
 
 // BloomFilter implements a space-efficient probabilistic data structure

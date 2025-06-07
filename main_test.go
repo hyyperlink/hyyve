@@ -46,22 +46,28 @@ func createTestDB(t *testing.T) (*DB, func()) {
 	return db, cleanup
 }
 
-// createTestTransaction creates a transaction with known data
-func createTestTransaction() *Transaction {
-	return &Transaction{
+// createTestTX creates a TX with known data using the new format
+func createTestTX() *TX {
+	return &TX{
 		Timestamp: time.Now().UnixNano(),
-		Hash:      "29fcb4a4281a05d4569deb542e0612a3c8ca6c08d242eaee724d2ac20ab31696",
-		From:      "612a3c8ca6fc24d2a569deb542e0612c20abb4a42298",
-		Signature: "d6a1183a14bda344fc101243ce4a91e1cc10f47fabbdb410f47fabbdb410f47fabbdb4cfd4eef5297e008eed",
-		Changes: []TransactionChange{{
-			To:              "1111111111111111111111111111111111111111",
+		Hash:      "644bcc7e564373040999aac89e7622f3ca71fba1d972fd94a31c3bfbf24e3938",
+		Instructions: []IX{{
+			Hash:            "a1b2c3d4e5f6789012345678901234567890123456789012345678901234abcd",
+			From:            "DpFLkLKipu9G1miZJKnN33DF5Mw1sfQm8CdCkL933mwE",
+			To:              "DEVnPuA9Ub24Taqvp9KUJ87yMEck48djHJnzC57owUpd",
 			Amount:          1000,
-			InstructionType: "transfer",
+			Fee:             500,
+			InstructionType: "Transfer",
 			InstructionData: []byte(`{"memo":"test"}`),
+			Signature:       "43ijbQTetb2e6LdzRd6Yfdo1fg3jyAhMWEu44UWw5RcMB459PJPMM68kZ6MsgVkDWmR4KHwoJse3tirzPHr5nW16",
 		}},
 		References: []string{},
-		Fee:        500,
 	}
+}
+
+// createTestTransaction is an alias for backwards compatibility with benchmarks
+func createTestTransaction() *TX {
+	return createTestTX()
 }
 
 // writeCorruptData writes corrupted data at the current offset
@@ -77,8 +83,8 @@ func writeCorruptData(db *DB) (offset int64, err error) {
 	return offset, err
 }
 
-// compareTransactions compares two transactions field by field
-func compareTransactions(t *testing.T, expected, actual *Transaction) {
+// compareTXs compares two TXs field by field
+func compareTXs(t *testing.T, expected, actual *TX) {
 	t.Helper()
 
 	if expected.Timestamp != actual.Timestamp {
@@ -87,38 +93,43 @@ func compareTransactions(t *testing.T, expected, actual *Transaction) {
 	if expected.Hash != actual.Hash {
 		t.Errorf("hash mismatch: want %s, got %s", expected.Hash, actual.Hash)
 	}
-	if expected.From != actual.From {
-		t.Errorf("from mismatch: want %s, got %s", expected.From, actual.From)
-	}
-	if expected.Signature != actual.Signature {
-		t.Errorf("signature mismatch: want %s, got %s", expected.Signature, actual.Signature)
-	}
-	if expected.Fee != actual.Fee {
-		t.Errorf("fee mismatch: want %d, got %d", expected.Fee, actual.Fee)
-	}
-
-	if len(expected.Changes) != len(actual.Changes) {
-		t.Errorf("changes length mismatch: want %d, got %d", len(expected.Changes), len(actual.Changes))
+	if len(expected.Instructions) != len(actual.Instructions) {
+		t.Errorf("instructions length mismatch: want %d, got %d", len(expected.Instructions), len(actual.Instructions))
 		return
 	}
 
-	// Compare changes field by field since they contain json.RawMessage
-	for i := range expected.Changes {
-		if expected.Changes[i].To != actual.Changes[i].To {
-			t.Errorf("change %d 'to' mismatch: want %s, got %s", i, expected.Changes[i].To, actual.Changes[i].To)
+	// Compare instructions field by field
+	for i := range expected.Instructions {
+		expectedIX := expected.Instructions[i]
+		actualIX := actual.Instructions[i]
+
+		if expectedIX.Hash != actualIX.Hash {
+			t.Errorf("instruction %d hash mismatch: want %s, got %s", i, expectedIX.Hash, actualIX.Hash)
 		}
-		if expected.Changes[i].Amount != actual.Changes[i].Amount {
-			t.Errorf("change %d amount mismatch: want %d, got %d", i, expected.Changes[i].Amount, actual.Changes[i].Amount)
+		if expectedIX.From != actualIX.From {
+			t.Errorf("instruction %d from mismatch: want %s, got %s", i, expectedIX.From, actualIX.From)
 		}
-		if expected.Changes[i].InstructionType != actual.Changes[i].InstructionType {
-			t.Errorf("change %d instruction type mismatch: want %s, got %s", i, expected.Changes[i].InstructionType, actual.Changes[i].InstructionType)
+		if expectedIX.To != actualIX.To {
+			t.Errorf("instruction %d to mismatch: want %s, got %s", i, expectedIX.To, actualIX.To)
 		}
-		// Compare InstructionData as strings since they're json.RawMessage
-		if string(expected.Changes[i].InstructionData) != string(actual.Changes[i].InstructionData) {
-			t.Errorf("change %d instruction data mismatch: want %s, got %s",
+		if expectedIX.Amount != actualIX.Amount {
+			t.Errorf("instruction %d amount mismatch: want %d, got %d", i, expectedIX.Amount, actualIX.Amount)
+		}
+		if expectedIX.Fee != actualIX.Fee {
+			t.Errorf("instruction %d fee mismatch: want %d, got %d", i, expectedIX.Fee, actualIX.Fee)
+		}
+		if expectedIX.InstructionType != actualIX.InstructionType {
+			t.Errorf("instruction %d type mismatch: want %s, got %s", i, expectedIX.InstructionType, actualIX.InstructionType)
+		}
+		if expectedIX.Signature != actualIX.Signature {
+			t.Errorf("instruction %d signature mismatch: want %s, got %s", i, expectedIX.Signature, actualIX.Signature)
+		}
+		// Compare InstructionData as strings
+		if string(expectedIX.InstructionData) != string(actualIX.InstructionData) {
+			t.Errorf("instruction %d data mismatch: want %s, got %s",
 				i,
-				string(expected.Changes[i].InstructionData),
-				string(actual.Changes[i].InstructionData))
+				string(expectedIX.InstructionData),
+				string(actualIX.InstructionData))
 		}
 	}
 
@@ -139,7 +150,7 @@ func TestReadTransactionFromOffset(t *testing.T) {
 		defer cleanup()
 
 		// Create a simple transaction (like a genesis/initial tx)
-		tx := createTestTransaction()
+		tx := createTestTX()
 		offset, err := db.file.Seek(0, 2) // Get current offset
 		if err != nil {
 			t.Fatalf("failed to get offset: %v", err)
@@ -156,7 +167,7 @@ func TestReadTransactionFromOffset(t *testing.T) {
 			t.Fatalf("failed to read transaction: %v", err)
 		}
 
-		compareTransactions(t, tx, got)
+		compareTXs(t, tx, got)
 	})
 
 	t.Run("with variable data", func(t *testing.T) {
@@ -164,12 +175,16 @@ func TestReadTransactionFromOffset(t *testing.T) {
 		defer cleanup()
 
 		// Create transaction with actual instruction data
-		tx := createTestTransaction()
-		tx.Changes = []TransactionChange{{
-			To:              "recipient",
+		tx := createTestTX()
+		tx.Instructions = []IX{{
+			Hash:            "b2c3d4e5f6789012345678901234567890123456789012345678901234bcde",
+			From:            "DpFLkLKipu9G1miZJKnN33DF5Mw1sfQm8CdCkL933mwE",
+			To:              "7xKXtg2CW87d97TXJLLKDqQq8njGUzMsm7Q9vxYHnDtK",
 			Amount:          1000,
-			InstructionType: "transfer",
+			Fee:             100,
+			InstructionType: "Transfer",
 			InstructionData: json.RawMessage(`{"memo":"test payment"}`),
+			Signature:       "43ijbQTetb2e6LdzRd6Yfdo1fg3jyAhMWEu44UWw5RcMB459PJPMM68kZ6MsgVkDWmR4KHwoJse3tirzPHr5nW16",
 		}}
 
 		offset, err := db.file.Seek(0, 2)
@@ -186,7 +201,7 @@ func TestReadTransactionFromOffset(t *testing.T) {
 			t.Fatalf("failed to read transaction: %v", err)
 		}
 
-		compareTransactions(t, tx, got)
+		compareTXs(t, tx, got)
 	})
 
 	t.Run("error cases", func(t *testing.T) {
@@ -225,7 +240,7 @@ func TestReadTransactionFromOffset(t *testing.T) {
 		defer cleanup()
 
 		// Write a valid transaction first
-		tx := createTestTransaction()
+		tx := createTestTX()
 		offset, err := db.file.Seek(0, 2)
 		if err != nil {
 			t.Fatalf("failed to get offset: %v", err)
@@ -237,10 +252,10 @@ func TestReadTransactionFromOffset(t *testing.T) {
 
 		// Corrupt the header by writing invalid timestamp and sizes
 		corruptHeader := RecordHeader{
-			Timestamp:   -1,     // Invalid timestamp
-			RefCount:    0xFFFF, // Impossibly large
-			ChangeCount: 0xFFFF, // Impossibly large
-			Fee:         0xFFFF,
+			Timestamp:        -1,     // Invalid timestamp
+			RefCount:         0xFFFF, // Impossibly large
+			InstructionCount: 0xFFFF, // Impossibly large
+			TotalFee:         0xFFFF,
 		}
 		headerBytes, _ := corruptHeader.MarshalBinary()
 		if _, err := db.file.WriteAt(headerBytes, offset); err != nil {
@@ -274,7 +289,7 @@ func TestLoadIndex(t *testing.T) {
 	db, cleanup := createTestDB(t)
 
 	// Write a single known transaction first
-	tx := createTestTransaction()
+	tx := createTestTX()
 	if err := db.SetTransaction(tx); err != nil {
 		t.Fatalf("failed to write transaction: %v", err)
 	}
@@ -292,7 +307,7 @@ func TestLoadIndex(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to get transaction: %v", err)
 	}
-	compareTransactions(t, tx, got)
+	compareTXs(t, tx, got)
 }
 
 func TestConcurrentAccess(t *testing.T) {
@@ -300,7 +315,7 @@ func TestConcurrentAccess(t *testing.T) {
 	defer cleanup()
 
 	// Write initial transaction
-	tx := createTestTransaction()
+	tx := createTestTX()
 	if err := db.SetTransaction(tx); err != nil {
 		t.Fatalf("failed to write initial transaction: %v", err)
 	}
@@ -340,7 +355,7 @@ func TestReferenceValidation(t *testing.T) {
 	defer cleanup()
 
 	// Try to store tx2 before tx1 exists
-	tx2 := createTestTransaction()
+	tx2 := createTestTX()
 	tx2.References = []string{"nonexistent_tx"}
 
 	err := db.SetTransaction(tx2)
@@ -354,7 +369,7 @@ func TestMultipleReferences(t *testing.T) {
 	defer cleanup()
 
 	// Create first transaction
-	tx1 := createTestTransaction()
+	tx1 := createTestTX()
 	tx1.Hash = "d6a118e1cc10f47fabbdb410f47fabbdb410f47fabbdb4cfd4eef5297e008eed"
 	tx1.References = []string{} // Use empty slice instead of nil
 
@@ -369,7 +384,7 @@ func TestMultipleReferences(t *testing.T) {
 	}
 
 	// Create second transaction that references the first
-	tx2 := createTestTransaction()
+	tx2 := createTestTX()
 	tx2.Hash = "410f47fabbdb4cfd4eef5297e008eedd6a118e1cc10f47fabbdb410f47fabbdb"
 	tx2.References = []string{"d6a118e1cc10f47fabbdb410f47fabbdb410f47fabbdb4cfd4eef5297e008eed"}
 
@@ -382,14 +397,14 @@ func TestAddressHistoryOrder(t *testing.T) {
 	db, cleanup := createTestDB(t)
 	defer cleanup()
 
-	addr := "612a3c8ca6fc24d2a569deb542e0612c20abb4a42298"
+	addr := "DpFLkLKipu9G1miZJKnN33DF5Mw1sfQm8CdCkL933mwE"
 	now := time.Now().UnixNano()
 
 	// Create transactions at different times
-	txs := []*Transaction{
-		{Hash: "110f47fabbdb4cfd4eef5297e008eedd6a118e1cc10f47fabbdb410f47fabbdb", From: addr, Timestamp: now - 2, Signature: "d6a1183a14bda344fc101243ce4a91e1cc10f47fabbdb410f47fabbdb410f47fabbdb4cfd4eef5297e008eed"},
-		{Hash: "210f47fabbdb4cfd4eef5297e008eedd6a118e1cc10f47fabbdb410f47fabbdb", From: addr, Timestamp: now - 1, Signature: "d6a1183a14bda344fc101243ce4a91e1cc10f47fabbdb410f47fabbdb410f47fabbdb4cfd4eef5297e008eed"},
-		{Hash: "310f47fabbdb4cfd4eef5297e008eedd6a118e1cc10f47fabbdb410f47fabbdb", From: addr, Timestamp: now, Signature: "d6a1183a14bda344fc101243ce4a91e1cc10f47fabbdb410f47fabbdb410f47fabbdb4cfd4eef5297e008eed"},
+	txs := []*TX{
+		{Hash: "110f47fabbdb4cfd4eef5297e008eedd6a118e1cc10f47fabbdb410f47fabbdb", Timestamp: now - 2, Instructions: []IX{{From: addr, Signature: "43ijbQTetb2e6LdzRd6Yfdo1fg3jyAhMWEu44UWw5RcMB459PJPMM68kZ6MsgVkDWmR4KHwoJse3tirzPHr5nW16"}}},
+		{Hash: "210f47fabbdb4cfd4eef5297e008eedd6a118e1cc10f47fabbdb410f47fabbdb", Timestamp: now - 1, Instructions: []IX{{From: addr, Signature: "43ijbQTetb2e6LdzRd6Yfdo1fg3jyAhMWEu44UWw5RcMB459PJPMM68kZ6MsgVkDWmR4KHwoJse3tirzPHr5nW16"}}},
+		{Hash: "310f47fabbdb4cfd4eef5297e008eedd6a118e1cc10f47fabbdb410f47fabbdb", Timestamp: now, Instructions: []IX{{From: addr, Signature: "43ijbQTetb2e6LdzRd6Yfdo1fg3jyAhMWEu44UWw5RcMB459PJPMM68kZ6MsgVkDWmR4KHwoJse3tirzPHr5nW16"}}},
 	}
 
 	for _, tx := range txs {
@@ -418,7 +433,7 @@ func TestReferenceScenarios(t *testing.T) {
 		db, cleanup := createTestDB(t)
 		defer cleanup()
 
-		tx := createTestTransaction()
+		tx := createTestTX()
 		tx.References = []string{"nonexistent"}
 
 		err := db.SetTransaction(tx)
@@ -433,14 +448,14 @@ func TestDuplicateReferences(t *testing.T) {
 	defer cleanup()
 
 	// Create base transaction
-	tx1 := createTestTransaction()
+	tx1 := createTestTX()
 	tx1.Hash = "d6a118e1cc10f47fabbdb410f47fabbdb410f47fabbdb4cfd4eef5297e008eed"
 	if err := db.SetTransaction(tx1); err != nil {
 		t.Fatal(err)
 	}
 
 	// Create transaction with duplicate references
-	tx2 := createTestTransaction()
+	tx2 := createTestTX()
 	tx2.Hash = "410f47fabbdb4cfd4eef5297e008eedd6a118e1cc10f47fabbdb410f47fabbdb"
 	tx2.References = []string{"d6a118e1cc10f47fabbdb410f47fabbdb410f47fabbdb4cfd4eef5297e008eed", "d6a118e1cc10f47fabbdb410f47fabbdb410f47fabbdb4cfd4eef5297e008eed"} // Duplicate reference
 
@@ -458,7 +473,7 @@ func TestCanArchive(t *testing.T) {
 	defer cleanup()
 
 	// Create base transaction
-	tx1 := createTestTransaction()
+	tx1 := createTestTX()
 	tx1.Hash = "d6a118e1cc10f47fabbdb410f47fabbdb410f47fabbdb4cfd4eef5297e008eed"
 	if err := db.SetTransaction(tx1); err != nil {
 		t.Fatal(err)
@@ -470,7 +485,7 @@ func TestCanArchive(t *testing.T) {
 	}
 
 	// Create transaction that references tx1
-	tx2 := createTestTransaction()
+	tx2 := createTestTX()
 	tx2.Hash = "410f47fabbdb4cfd4eef5297e008eedd6a118e1cc10f47fabbdb410f47fabbdb"
 	tx2.References = []string{"d6a118e1cc10f47fabbdb410f47fabbdb410f47fabbdb4cfd4eef5297e008eed"}
 	if err := db.SetTransaction(tx2); err != nil {
@@ -493,21 +508,21 @@ func TestReferenceQueries(t *testing.T) {
 	defer cleanup()
 
 	// Create a chain of transactions: tx1 <- tx2 <- tx3
-	tx1 := createTestTransaction()
+	tx1 := createTestTX()
 	tx1.Hash = "hash1_d6a118e1cc10f47fabbdb410f47fabbdb410f47fabbdb4cfd4eef5297e"
 	tx1.References = []string{}
 	if err := db.SetTransaction(tx1); err != nil {
 		t.Fatal(err)
 	}
 
-	tx2 := createTestTransaction()
+	tx2 := createTestTX()
 	tx2.Hash = "hash2_410f47fabbdb4cfd4eef5297e008eedd6a118e1cc10f47fabbdb410f47"
 	tx2.References = []string{tx1.Hash}
 	if err := db.SetTransaction(tx2); err != nil {
 		t.Fatal(err)
 	}
 
-	tx3 := createTestTransaction()
+	tx3 := createTestTX()
 	tx3.Hash = "hash3_d6a118e1cc10f47fabbdb410f47fabbdb410f47fabbdb4cfd4eef5297e"
 	tx3.References = []string{tx2.Hash}
 	if err := db.SetTransaction(tx3); err != nil {
@@ -560,11 +575,11 @@ func TestBatchGetTransactions(t *testing.T) {
 	defer cleanup()
 
 	// Create several transactions
-	txs := make([]*Transaction, 3)
+	txs := make([]*TX, 3)
 	for i := range txs {
-		tx := createTestTransaction()
+		tx := createTestTX()
 		tx.Hash = fmt.Sprintf("hash%d_03d0f902018561802b66b0408b578373d02947e47d4e2a477526856f66", i)
-		tx.Changes[0].Amount = uint64(1000 * (i + 1)) // Different amounts to verify correct retrieval
+		tx.Instructions[0].Amount = uint64(1000 * (i + 1)) // Different amounts to verify correct retrieval
 		txs[i] = tx
 		if err := db.SetTransaction(tx); err != nil {
 			t.Fatalf("failed to store tx%d: %v", i, err)
@@ -588,8 +603,8 @@ func TestBatchGetTransactions(t *testing.T) {
 			t.Errorf("transaction %s not found in results", hash)
 			continue
 		}
-		if got.Changes[0].Amount != uint64(1000*(i+1)) {
-			t.Errorf("wrong amount for tx%d: want %d, got %d", i, 1000*(i+1), got.Changes[0].Amount)
+		if got.Instructions[0].Amount != uint64(1000*(i+1)) {
+			t.Errorf("wrong amount for tx%d: want %d, got %d", i, 1000*(i+1), got.Instructions[0].Amount)
 		}
 	}
 
@@ -666,7 +681,7 @@ func BenchmarkAll(b *testing.B) {
 			start := time.Now()
 			writeOps = b.N
 			for i := 0; i < b.N; i++ {
-				txs := make([]*Transaction, writeSize)
+				txs := make([]*TX, writeSize)
 				for j := range txs {
 					sha3Sum256HashBytes := sha3.Sum256([]byte(fmt.Sprintf("tune_%d", j)))
 					txHash := hex.EncodeToString(sha3Sum256HashBytes[:])
@@ -735,7 +750,7 @@ func BenchmarkOperations(b *testing.B) {
 	// Test different batch sizes
 	for _, batchSize := range []int{1, 10, 100, 1000} {
 		// Create test transactions
-		txs := make([]*Transaction, batchSize)
+		txs := make([]*TX, batchSize)
 		var hashes []string
 		for i := range txs {
 			sha3Sum256HashBytes := sha3.Sum256([]byte(fmt.Sprintf("tx%d", i)))
@@ -804,7 +819,7 @@ func BenchmarkProfile(b *testing.B) {
 
 	// Create test transactions
 	const batchSize = 100
-	txs := make([]*Transaction, batchSize)
+	txs := make([]*TX, batchSize)
 	var hashes []string
 	for i := range txs {
 		sha3Sum256HashBytes := sha3.Sum256([]byte(fmt.Sprintf("tx%d", i)))
@@ -1351,34 +1366,36 @@ func TestAddReference(t *testing.T) {
 		defer cleanup()
 
 		// Create two transactions with realistic data
-		tx1 := &Transaction{
+		tx1 := &TX{
 			Timestamp: 1742443164867545494,
 			Hash:      "8c3e73b8a8a8996485693057f8d141ac9cf81a01486071e1bbe025d2f0570fa3",
-			From:      "DEVnPuA9Ub24Taqvp9KUJ87yMEck48djHJnzC57owUpd",
-			Signature: "43ijbQTetb2e6LdzRd6Yfdo1fg3jyAhMWEu44UWw5RcMB459PJPMM68kZ6MsgVkDWmR4KHwoJse3tirzPHr5nW16",
-			Changes: []TransactionChange{{
+			Instructions: []IX{{
+				Hash:            "8c3e73b8a8a8996485693057f8d141ac9cf81a01486071e1bbe025d2f0570fa3",
+				From:            "DEVnPuA9Ub24Taqvp9KUJ87yMEck48djHJnzC57owUpd",
 				To:              "DpFLkLKipu9G1miZJKnN33DF5Mw1sfQm8CdCkL933mwE",
 				Amount:          46653458980,
+				Fee:             10920,
 				InstructionType: "Transfer",
 				InstructionData: json.RawMessage(`{"recipients":[{"address":"DpFLkLKipu9G1miZJKnN33DF5Mw1sfQm8CdCkL933mwE","amount":46653458980}]}`),
+				Signature:       "43ijbQTetb2e6LdzRd6Yfdo1fg3jyAhMWEu44UWw5RcMB459PJPMM68kZ6MsgVkDWmR4KHwoJse3tirzPHr5nW16",
 			}},
 			References: []string{},
-			Fee:        10920,
 		}
 
-		tx2 := &Transaction{
+		tx2 := &TX{
 			Timestamp: 1742443165854655038,
 			Hash:      "e99ff77fc4dd8563fcb8862d98a36bab05418d4b876186947af7271b4e5b0e9f",
-			From:      "DEVnPuA9Ub24Taqvp9KUJ87yMEck48djHJnzC57owUpd",
-			Signature: "2eCFzDh6a1dsmBf4AFVEmUBxSTagSQtqQoMHiq6Ts2D4idhJM3QLTR49ZmMe9Dy8mmxmZoxnRhRCdxRrZZphTNYX",
-			Changes: []TransactionChange{{
+			Instructions: []IX{{
+				Hash:            "e99ff77fc4dd8563fcb8862d98a36bab05418d4b876186947af7271b4e5b0e9f",
+				From:            "DEVnPuA9Ub24Taqvp9KUJ87yMEck48djHJnzC57owUpd",
 				To:              "DpFLkLKipu9G1miZJKnN33DF5Mw1sfQm8CdCkL933mwE",
 				Amount:          3569938312,
+				Fee:             8700,
 				InstructionType: "Transfer",
 				InstructionData: json.RawMessage(`{"recipients":[{"address":"DpFLkLKipu9G1miZJKnN33DF5Mw1sfQm8CdCkL933mwE","amount":3569938312}]}`),
+				Signature:       "2eCFzDh6a1dsmBf4AFVEmUBxSTagSQtqQoMHiq6Ts2D4idhJM3QLTR49ZmMe9Dy8mmxmZoxnRhRCdxRrZZphTNYX",
 			}},
 			References: []string{},
-			Fee:        8700,
 		}
 
 		// Store both transactions
@@ -1419,50 +1436,56 @@ func TestAddReference(t *testing.T) {
 		defer cleanup()
 
 		// Create three transactions with realistic data
-		tx1 := &Transaction{
+		tx1 := &TX{
 			Timestamp: 1742443164867545494,
 			Hash:      "8c3e73b8a8a8996485693057f8d141ac9cf81a01486071e1bbe025d2f0570fa3",
-			From:      "DEVnPuA9Ub24Taqvp9KUJ87yMEck48djHJnzC57owUpd",
-			Signature: "43ijbQTetb2e6LdzRd6Yfdo1fg3jyAhMWEu44UWw5RcMB459PJPMM68kZ6MsgVkDWmR4KHwoJse3tirzPHr5nW16",
-			Changes: []TransactionChange{{
+			Instructions: []IX{{
+				Hash:            "8c3e73b8a8a8996485693057f8d141ac9cf81a01486071e1bbe025d2f0570fa3",
+				From:            "DEVnPuA9Ub24Taqvp9KUJ87yMEck48djHJnzC57owUpd",
 				To:              "DpFLkLKipu9G1miZJKnN33DF5Mw1sfQm8CdCkL933mwE",
 				Amount:          46653458980,
+				Fee:             10920,
 				InstructionType: "Transfer",
 				InstructionData: json.RawMessage(`{"recipients":[{"address":"DpFLkLKipu9G1miZJKnN33DF5Mw1sfQm8CdCkL933mwE","amount":46653458980}]}`),
+				Signature:       "43ijbQTetb2e6LdzRd6Yfdo1fg3jyAhMWEu44UWw5RcMB459PJPMM68kZ6MsgVkDWmR4KHwoJse3tirzPHr5nW16",
 			}},
-			Fee: 10920,
+			References: []string{},
 		}
 
-		tx2 := &Transaction{
+		tx2 := &TX{
 			Timestamp: 1742443165854655038,
 			Hash:      "e99ff77fc4dd8563fcb8862d98a36bab05418d4b876186947af7271b4e5b0e9f",
-			From:      "DEVnPuA9Ub24Taqvp9KUJ87yMEck48djHJnzC57owUpd",
-			Signature: "2eCFzDh6a1dsmBf4AFVEmUBxSTagSQtqQoMHiq6Ts2D4idhJM3QLTR49ZmMe9Dy8mmxmZoxnRhRCdxRrZZphTNYX",
-			Changes: []TransactionChange{{
+			Instructions: []IX{{
+				Hash:            "e99ff77fc4dd8563fcb8862d98a36bab05418d4b876186947af7271b4e5b0e9f",
+				From:            "DEVnPuA9Ub24Taqvp9KUJ87yMEck48djHJnzC57owUpd",
 				To:              "DpFLkLKipu9G1miZJKnN33DF5Mw1sfQm8CdCkL933mwE",
 				Amount:          3569938312,
+				Fee:             8700,
 				InstructionType: "Transfer",
 				InstructionData: json.RawMessage(`{"recipients":[{"address":"DpFLkLKipu9G1miZJKnN33DF5Mw1sfQm8CdCkL933mwE","amount":3569938312}]}`),
+				Signature:       "2eCFzDh6a1dsmBf4AFVEmUBxSTagSQtqQoMHiq6Ts2D4idhJM3QLTR49ZmMe9Dy8mmxmZoxnRhRCdxRrZZphTNYX",
 			}},
-			Fee: 8700,
+			References: []string{},
 		}
 
-		tx3 := &Transaction{
+		tx3 := &TX{
 			Timestamp: 1742443166875594385,
 			Hash:      "c57ade8fc059ece500e7a01b3a4766187df93ac53edd196b252f8801b75ce067",
-			From:      "DEVnPuA9Ub24Taqvp9KUJ87yMEck48djHJnzC57owUpd",
-			Signature: "4Ho32ymZ8JM8XQ2NBQUNFK175ooLo4bzzJvkimhbgcPNLopDqc9fL11jehZnCL1joEvcVHyN3kSH4e9vSv31iRZ7",
-			Changes: []TransactionChange{{
+			Instructions: []IX{{
+				Hash:            "c57ade8fc059ece500e7a01b3a4766187df93ac53edd196b252f8801b75ce067",
+				From:            "DEVnPuA9Ub24Taqvp9KUJ87yMEck48djHJnzC57owUpd",
 				To:              "DpFLkLKipu9G1miZJKnN33DF5Mw1sfQm8CdCkL933mwE",
 				Amount:          14786680653,
+				Fee:             10880,
 				InstructionType: "Transfer",
 				InstructionData: json.RawMessage(`{"recipients":[{"address":"DpFLkLKipu9G1miZJKnN33DF5Mw1sfQm8CdCkL933mwE","amount":14786680653}]}`),
+				Signature:       "4Ho32ymZ8JM8XQ2NBQUNFK175ooLo4bzzJvkimhbgcPNLopDqc9fL11jehZnCL1joEvcVHyN3kSH4e9vSv31iRZ7",
 			}},
-			Fee: 10880,
+			References: []string{},
 		}
 
 		// Store all transactions
-		for _, tx := range []*Transaction{tx1, tx2, tx3} {
+		for _, tx := range []*TX{tx1, tx2, tx3} {
 			if err := db.SetTransaction(tx); err != nil {
 				t.Fatalf("failed to store %s: %v", tx.Hash, err)
 			}
@@ -1511,18 +1534,20 @@ func TestAddReference(t *testing.T) {
 		defer cleanup()
 
 		// Create only the destination transaction
-		tx2 := &Transaction{
+		tx2 := &TX{
 			Timestamp: 1742443165854655038,
 			Hash:      "e99ff77fc4dd8563fcb8862d98a36bab05418d4b876186947af7271b4e5b0e9f",
-			From:      "DEVnPuA9Ub24Taqvp9KUJ87yMEck48djHJnzC57owUpd",
-			Signature: "2eCFzDh6a1dsmBf4AFVEmUBxSTagSQtqQoMHiq6Ts2D4idhJM3QLTR49ZmMe9Dy8mmxmZoxnRhRCdxRrZZphTNYX",
-			Changes: []TransactionChange{{
+			Instructions: []IX{{
+				Hash:            "e99ff77fc4dd8563fcb8862d98a36bab05418d4b876186947af7271b4e5b0e9f",
+				From:            "DEVnPuA9Ub24Taqvp9KUJ87yMEck48djHJnzC57owUpd",
 				To:              "DpFLkLKipu9G1miZJKnN33DF5Mw1sfQm8CdCkL933mwE",
 				Amount:          3569938312,
+				Fee:             8700,
 				InstructionType: "Transfer",
 				InstructionData: json.RawMessage(`{"recipients":[{"address":"DpFLkLKipu9G1miZJKnN33DF5Mw1sfQm8CdCkL933mwE","amount":3569938312}]}`),
+				Signature:       "2eCFzDh6a1dsmBf4AFVEmUBxSTagSQtqQoMHiq6Ts2D4idhJM3QLTR49ZmMe9Dy8mmxmZoxnRhRCdxRrZZphTNYX",
 			}},
-			Fee: 8700,
+			References: []string{},
 		}
 
 		if err := db.SetTransaction(tx2); err != nil {
@@ -1541,18 +1566,20 @@ func TestAddReference(t *testing.T) {
 		defer cleanup()
 
 		// Create only the source transaction
-		tx1 := &Transaction{
+		tx1 := &TX{
 			Timestamp: 1742443164867545494,
 			Hash:      "8c3e73b8a8a8996485693057f8d141ac9cf81a01486071e1bbe025d2f0570fa3",
-			From:      "DEVnPuA9Ub24Taqvp9KUJ87yMEck48djHJnzC57owUpd",
-			Signature: "43ijbQTetb2e6LdzRd6Yfdo1fg3jyAhMWEu44UWw5RcMB459PJPMM68kZ6MsgVkDWmR4KHwoJse3tirzPHr5nW16",
-			Changes: []TransactionChange{{
+			Instructions: []IX{{
+				Hash:            "8c3e73b8a8a8996485693057f8d141ac9cf81a01486071e1bbe025d2f0570fa3",
+				From:            "DEVnPuA9Ub24Taqvp9KUJ87yMEck48djHJnzC57owUpd",
 				To:              "DpFLkLKipu9G1miZJKnN33DF5Mw1sfQm8CdCkL933mwE",
 				Amount:          46653458980,
+				Fee:             10920,
 				InstructionType: "Transfer",
 				InstructionData: json.RawMessage(`{"recipients":[{"address":"DpFLkLKipu9G1miZJKnN33DF5Mw1sfQm8CdCkL933mwE","amount":46653458980}]}`),
+				Signature:       "43ijbQTetb2e6LdzRd6Yfdo1fg3jyAhMWEu44UWw5RcMB459PJPMM68kZ6MsgVkDWmR4KHwoJse3tirzPHr5nW16",
 			}},
-			Fee: 10920,
+			References: []string{},
 		}
 
 		if err := db.SetTransaction(tx1); err != nil {
@@ -1571,32 +1598,36 @@ func TestAddReference(t *testing.T) {
 		defer cleanup()
 
 		// Create two transactions with realistic data
-		tx1 := &Transaction{
+		tx1 := &TX{
 			Timestamp: 1742443164867545494,
 			Hash:      "8c3e73b8a8a8996485693057f8d141ac9cf81a01486071e1bbe025d2f0570fa3",
-			From:      "DEVnPuA9Ub24Taqvp9KUJ87yMEck48djHJnzC57owUpd",
-			Signature: "43ijbQTetb2e6LdzRd6Yfdo1fg3jyAhMWEu44UWw5RcMB459PJPMM68kZ6MsgVkDWmR4KHwoJse3tirzPHr5nW16",
-			Changes: []TransactionChange{{
+			Instructions: []IX{{
+				Hash:            "8c3e73b8a8a8996485693057f8d141ac9cf81a01486071e1bbe025d2f0570fa3",
+				From:            "DEVnPuA9Ub24Taqvp9KUJ87yMEck48djHJnzC57owUpd",
 				To:              "DpFLkLKipu9G1miZJKnN33DF5Mw1sfQm8CdCkL933mwE",
 				Amount:          46653458980,
+				Fee:             10920,
 				InstructionType: "Transfer",
 				InstructionData: json.RawMessage(`{"recipients":[{"address":"DpFLkLKipu9G1miZJKnN33DF5Mw1sfQm8CdCkL933mwE","amount":46653458980}]}`),
+				Signature:       "43ijbQTetb2e6LdzRd6Yfdo1fg3jyAhMWEu44UWw5RcMB459PJPMM68kZ6MsgVkDWmR4KHwoJse3tirzPHr5nW16",
 			}},
-			Fee: 10920,
+			References: []string{},
 		}
 
-		tx2 := &Transaction{
+		tx2 := &TX{
 			Timestamp: 1742443165854655038,
 			Hash:      "e99ff77fc4dd8563fcb8862d98a36bab05418d4b876186947af7271b4e5b0e9f",
-			From:      "DEVnPuA9Ub24Taqvp9KUJ87yMEck48djHJnzC57owUpd",
-			Signature: "2eCFzDh6a1dsmBf4AFVEmUBxSTagSQtqQoMHiq6Ts2D4idhJM3QLTR49ZmMe9Dy8mmxmZoxnRhRCdxRrZZphTNYX",
-			Changes: []TransactionChange{{
+			Instructions: []IX{{
+				Hash:            "e99ff77fc4dd8563fcb8862d98a36bab05418d4b876186947af7271b4e5b0e9f",
+				From:            "DEVnPuA9Ub24Taqvp9KUJ87yMEck48djHJnzC57owUpd",
 				To:              "DpFLkLKipu9G1miZJKnN33DF5Mw1sfQm8CdCkL933mwE",
 				Amount:          3569938312,
+				Fee:             8700,
 				InstructionType: "Transfer",
 				InstructionData: json.RawMessage(`{"recipients":[{"address":"DpFLkLKipu9G1miZJKnN33DF5Mw1sfQm8CdCkL933mwE","amount":3569938312}]}`),
+				Signature:       "2eCFzDh6a1dsmBf4AFVEmUBxSTagSQtqQoMHiq6Ts2D4idhJM3QLTR49ZmMe9Dy8mmxmZoxnRhRCdxRrZZphTNYX",
 			}},
-			Fee: 8700,
+			References: []string{},
 		}
 
 		// Store both transactions
